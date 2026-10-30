@@ -1,0 +1,2289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM Drive</title>
+    <style>
+        :root {
+            /* Light theme variables */
+            --bg-color-light: #f0f0f0;
+            --loading-color-light: #2C2C2C;
+            --info-color-light: rgba(44, 44, 44, 0.8);
+            --speed-color-light: #2C2C2C;
+            --scene-bg-light: #ffffff;
+            --road-color-light: #999999;
+            
+            /* Dark theme variables */
+            --bg-color-dark: #242424;
+            --loading-color-dark: #ffffff;
+            --info-color-dark: rgba(255, 255, 255, 0.8);
+            --speed-color-dark: #ffffff;
+            --scene-bg-dark: #1a1a1a;
+            --road-color-dark: #cccccc;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color-light);
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            transition: all 0.3s ease;
+        }
+        
+        body.dark-theme {
+            background-color: var(--bg-color-dark);
+        }
+        
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: var(--loading-color-light);
+            text-align: center;
+            z-index: 100;
+            transition: color 0.3s ease;
+        }
+        
+        body.dark-theme #loading {
+            color: var(--loading-color-dark);
+        }
+        
+        #info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: var(--info-color-light);
+            font-size: 12px;
+            z-index: 100;
+            transition: color 0.3s ease;
+        }
+        
+        body.dark-theme #info {
+            color: var(--info-color-dark);
+        }
+        
+        /* Trip info (navigation) at the panel edges keeps the speed exactly centered */
+        #bottomBar {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            padding: 0 24px;
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            column-gap: 24px;
+            align-items: end;
+            color: var(--speed-color-light);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            text-align: center;
+            z-index: 100;
+            line-height: 1.2;
+            transition: color 0.3s ease;
+            pointer-events: none;
+            /* Halo in the background colour keeps the text readable over the road lines */
+            text-shadow: 0 0 4px var(--bg-color-light), 0 0 8px var(--bg-color-light), 0 0 12px var(--bg-color-light);
+        }
+        
+        body.dark-theme #bottomBar {
+            color: var(--speed-color-dark);
+            text-shadow: 0 0 4px var(--bg-color-dark), 0 0 8px var(--bg-color-dark), 0 0 12px var(--bg-color-dark);
+        }
+        
+        #tripArrival {
+            grid-column: 1;
+            justify-self: start;
+            text-align: left;
+        }
+        
+        #speedOverlay {
+            grid-column: 2;
+            position: relative;
+        }
+
+        #speedOverlay.over .speed-value {
+            color: #e53935;
+        }
+
+        #speedOverlay.hidden-speed > .speed-label,
+        #speedOverlay.hidden-speed > .speed-value,
+        #speedOverlay.hidden-speed > .speed-unit {
+            visibility: hidden;
+        }
+
+        /* Road sign next to the speed, outside the grid so the speed stays centered */
+        #speedLimit {
+            display: none;
+            position: absolute;
+            right: 100%;
+            bottom: 2px;
+            margin-right: 12px;
+            width: 40px;
+            height: 40px;
+            box-sizing: border-box;
+            border: 4px solid #d32f2f;
+            border-radius: 50%;
+            background: #fff;
+            color: #111;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 32px;
+            text-shadow: none;
+        }
+
+        #speedCamera {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            margin-bottom: 10px;
+            padding: 8px 16px;
+            border-radius: 12px;
+            background: #ffb300;
+            color: #111;
+            font-size: 18px;
+            font-weight: 600;
+            white-space: nowrap;
+            text-shadow: none;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+        }
+
+        #speedCamera.over {
+            animation: camera-pulse 0.8s ease-in-out infinite;
+        }
+
+        @keyframes camera-pulse {
+            50% { background: rgba(255, 179, 0, 0.3); }
+        }
+
+        #speedCamera svg {
+            vertical-align: -2px;
+            margin-right: 6px;
+        }
+
+        /* Same place as the speed camera banner, which wins when both are due */
+        #mapNotice {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            margin-bottom: 10px;
+            padding: 8px 16px;
+            border-radius: 12px;
+            background: #1a73e8;
+            color: #fff;
+            font-size: 18px;
+            font-weight: 600;
+            white-space: nowrap;
+            text-shadow: none;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+        }
+
+        #mapNotice svg {
+            vertical-align: -3px;
+            margin-right: 6px;
+        }
+        
+        #tripRemaining {
+            grid-column: 3;
+            justify-self: end;
+            text-align: right;
+        }
+        
+        .trip-item {
+            display: none;
+        }
+        
+        body.navigating .trip-item {
+            display: block;
+        }
+        
+        /* Smaller than the speed so it stays the main value */
+        .trip-item .speed-value {
+            font-size: 18px;
+        }
+        
+        .speed-label {
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 1px;
+            opacity: 0.7;
+            margin-bottom: 2px;
+        }
+        
+        .speed-value {
+            font-size: 28px;
+            font-weight: 300;
+        }
+        
+        .speed-unit {
+            font-size: 12px;
+            font-weight: 400;
+            opacity: 0.8;
+            margin-left: 3px;
+        }
+        
+        #themeToggle {
+            display: none; /* Hidden since theme is managed by Android */
+        }
+
+        /* Required by the ODbL wherever the map data is shown */
+        #mapAttribution {
+            display: none;
+            position: absolute;
+            bottom: 4px;
+            right: 8px;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            font-size: 10px;
+            color: var(--speed-color-light);
+            opacity: 0.6;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        body.dark-theme #mapAttribution {
+            color: var(--speed-color-dark);
+        }
+
+        body.osm #mapAttribution {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="loading">
+            <div id="loading-text">Loading...</div>
+        </div>
+        <div id="bottomBar">
+            <div id="tripArrival" class="trip-item">
+                <div class="speed-label" id="trip-arrival-label"></div>
+                <span class="speed-value" id="trip-arrival-value"></span>
+            </div>
+            <div id="speedOverlay">
+                <div id="speedLimit"></div>
+                <div id="speedCamera"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="10" rx="1.5"/><circle cx="10" cy="8" r="3"/><path d="M17 6h3v4h-3M10 13v8M6 21h8"/></svg><span id="speedCameraText"></span></div>
+                <div id="mapNotice"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14"/></svg><span id="mapNoticeText"></span></div>
+                <div class="speed-label" id="speed-label">SPEED</div>
+                <span class="speed-value">0</span><span class="speed-unit" id="speed-unit">km/h</span>
+            </div>
+            <div id="tripRemaining" class="trip-item">
+                <div class="speed-label" id="trip-remaining-label"></div>
+                <span class="speed-value" id="trip-remaining-value"></span>
+            </div>
+        </div>
+        <div id="mapAttribution">© OpenStreetMap contributors</div>
+    </div>
+
+    <!-- Local Three.js imports -->
+    <script src="js/three.min.js"></script>
+    <script src="js/GLTFLoader.js"></script>
+    <script src="js/OrbitControls.js"></script>
+
+    <script>
+        // Localized strings - will be set by Android code
+        let localizedStrings = {
+            loading: "Loading...",
+            loadingProgress: "Loading... {0}%",
+            errorLoading: "Error loading model",
+            speedLabel: "SPEED",
+            speedUnit: "km/h",
+            speedCamera: "Speed camera in {0}"
+        };
+        
+        let scene, camera, renderer, controls;
+        let model;
+        let currentSpeed = 0; // Real GPS speed
+        let isThirdPersonView = false;
+        let roadMesh;
+        let roadTexture;
+        let roadPivot; // Turns the road to follow the car's driving direction
+        let roadOffset = 0;
+        let speedThreshold = 7; // Velocità minima per mostrare strada e vista posteriore
+        let isDarkTheme = false; // Theme state
+        let roadTargetOpacity = 0; // Target opacity for smooth transitions
+        let roadCurrentOpacity = 0; // Current opacity for smooth transitions
+        let roadTransitionSpeed = 0.02; // Speed of fade in/out transition (slower for longer transition)
+        let roadLinesEnabled = true;
+        let roadLinesStyle = 'left_dashed'; // 'both_solid', 'left_dashed', 'right_dashed'
+        let animationEnabled = true; // Whether motion animation (speed-based view + road) is enabled
+
+        // Every model is scaled so its longest side is MODEL_SIZE and its bottom rests at MODEL_FLOOR
+        const MODEL_SIZE = 3.7;
+        const MODEL_FLOOR = -0.35;
+        const FOCUS = new THREE.Vector3(0, MODEL_FLOOR, 0);
+
+        // Camera poses: az = angle around the car (0 = +Z side), h = height, d = horizontal distance
+        const DEFAULT_PARK = { az: -0.637, h: 0.662, d: 4.426 };
+        const DEFAULT_DRIVE = { az: Math.PI, h: 1.62, d: 6.015 };
+        let parkPose = { ...DEFAULT_PARK };
+        let drivePose = { ...DEFAULT_DRIVE };
+        let targetCameraAngle = parkPose.az;
+        let camDist = parkPose.d;
+
+        // Per-model settings from Android: { yaw, colors: { originalHex: '#newhex' }, park, drive, roadYaw }
+        let modelConfig = null;
+        let colorOverrides = {};
+        let loadState = 'idle'; // idle | loading | ready | error
+        let loadToken = 0;
+        let lastModelUrl = null;
+        let loadRetries = 0;
+        // At screen-on the WebView or the model's storage can be briefly unavailable
+        const LOAD_RETRY_MS = [1000, 3000, 6000];
+        let editMode = null; // Set by the setup wizard: preview | colors | park | drive | wheels | lights
+
+        // While parked the user can orbit/zoom; the camera returns to the parked pose after this idle time
+        const ORBIT_IDLE_MS = 8000;
+        let userTouching = false;
+        let userOrbitUntil = 0;
+
+        function init() {
+            // Create scene
+            scene = new THREE.Scene();
+            updateSceneBackground();
+
+            // Create camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(1, 0.5, 2);
+
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
+            scene.add(ambientLight);
+
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+            directionalLight1.position.set(1, 1, 1);
+            directionalLight1.castShadow = true;
+            scene.add(directionalLight1);
+            
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight2.position.set(-1, -1, 1);
+            scene.add(directionalLight2);
+            
+            const directionalLight3 = new THREE.DirectionalLight(0xffffff, 0.6);
+            directionalLight3.position.set(0, 1, -1);
+            scene.add(directionalLight3);
+
+            // Create road
+            roadPivot = new THREE.Group();
+            scene.add(roadPivot);
+            createRoad();
+
+            // Add controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.1;
+            controls.enableZoom = true;
+            controls.enablePan = false;
+            controls.maxPolarAngle = Math.PI * 0.55; // Keep the camera above the ground
+            controls.minDistance = 1;
+            controls.maxDistance = 10;
+            controls.addEventListener('start', () => { userTouching = true; });
+            controls.addEventListener('end', () => {
+                showTires();
+                userTouching = false;
+                userOrbitUntil = performance.now() + ORBIT_IDLE_MS;
+                // The way back to the parked pose starts from where the user left the camera
+                camDist = Math.hypot(camera.position.x - FOCUS.x, camera.position.z - FOCUS.z);
+            });
+
+            // Model is loaded externally via loadModelFromUri() called from Android
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+
+            // Start animation loop immediately so the scene is ready
+            animate();
+        }
+
+        // ---- Road: a lane that starts behind the car and bends ahead of an upcoming turn ----
+        const ROAD_LEN = 30;
+        const ROAD_SEGS = 150;
+        const ROAD_TEXTURE_UNITS = 2;  // length of road covered by one copy of the lines texture
+        // Far enough behind the car to pass under the camera of any driving view, so the lane reaches the screen edge
+        const NEAR_Z = -9;
+        const FAR_Z = NEAR_Z + ROAD_LEN;
+        const TURN_Z = 1.2;            // where the bend starts when the turn is reached (car front)
+        const METERS_PER_UNIT = 1.2;   // the car is ~3.7 units for ~4.4 m
+        const LATERAL_ACCEL = 2.5;     // m/s², comfortable cornering
+        const VISUAL_TIGHTEN = 0.5;    // the road shows only ~30 m: tighter radii keep bends readable
+        const MIN_RADIUS = 3;          // units; below ~half the road width the inner edge would fold
+        const MAX_RADIUS = 22;         // units; wider bends would fall outside the visible road
+        const DEG = Math.PI / 180;
+        let roadBase = null;
+
+        function createRoad() {
+            // Lane markings on a transparent canvas - ADAS style with themed colors
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = isDarkTheme ? '#cccccc' : '#999999';
+            ctx.lineWidth = 12;
+
+            ctx.setLineDash(roadLinesStyle === 'right_dashed' ? [40, 100] : []);
+            ctx.beginPath();
+            ctx.moveTo(canvas.width * 0.2, 0);
+            ctx.lineTo(canvas.width * 0.2, canvas.height);
+            ctx.stroke();
+
+            ctx.setLineDash(roadLinesStyle === 'left_dashed' ? [40, 100] : []);
+            ctx.beginPath();
+            ctx.moveTo(canvas.width * 0.8, 0);
+            ctx.lineTo(canvas.width * 0.8, canvas.height);
+            ctx.stroke();
+
+            roadTexture = new THREE.CanvasTexture(canvas);
+            roadTexture.wrapS = THREE.RepeatWrapping;
+            roadTexture.wrapT = THREE.RepeatWrapping;
+            roadTexture.repeat.set(1, ROAD_LEN / ROAD_TEXTURE_UNITS);
+            roadTexture.offset.y = roadOffset;
+
+            // Many segments along the lane so it can follow a bend
+            const roadGeometry = new THREE.PlaneGeometry(4, ROAD_LEN, 1, ROAD_SEGS);
+            const roadMaterial = new THREE.MeshLambertMaterial({
+                map: roadTexture,
+                transparent: true,
+                opacity: 0,
+                side: THREE.DoubleSide
+            });
+            roadMesh = new THREE.Mesh(roadGeometry, roadMaterial);
+            roadMesh.rotation.x = -Math.PI / 2;
+            roadMesh.position.y = -0.5;
+            roadMesh.position.z = NEAR_Z + ROAD_LEN / 2;
+            roadMesh.visible = false;
+            roadBase = Float32Array.from(roadGeometry.attributes.position.array);
+            roadPivot.add(roadMesh);
+            bendRoad();
+        }
+
+        // Upcoming maneuver from Android: dir +1 left, -1 right, 0 straight; angle in degrees; meters as
+        // shown by the navigation app. null when not navigating.
+        const maneuver = { navigating: false, dir: 0, angle: 90 * DEG, meters: Infinity, at: 0 };
+        let roadCurveEnabled = true;
+        let currentKmh = 0;
+        // locked: the car has reached the bend and drives through it, whatever the next maneuver says
+        const bend = { curvature: 0, angle: 0, startZ: FAR_Z + 10, locked: false, unitsPerMeter: 0, lastAt: 0 };
+
+        // ---- Map: the real roads around the car at 1:1 scale; when present it replaces the lane above ----
+        // Scene in map metres (x east, y north):
+        //   car: { offset: metres from the followed road's centre line to the car's lane centre, + left }
+        //   path: [[x, y]...] the road the car follows, carIndex: the car's point in it
+        //   roads: [{ pts: [[x, y]...], fwd, back: lanes along / against pts, laneW, center: dashed centre line,
+        //            dash: [on, off] metres, s0: dash phase at pts[0], clip: { x, y, r } to draw only near a junction }]
+        //   cameras: [{ x, y, brg }]
+        const MAP_RANGE = 250;         // metres drawn around the car
+        const MAP_STEP = 0.75;         // metres between line samples
+        const MAP_POSE_S = 0.3;        // seconds to absorb the jump of a new GPS fix
+        const map = { scene: null, at: 0, root: null, inner: null, lines: null, objects: [], path: null, pathS: null, carS: 0, pose: null };
+        const MAP_LINE_OPACITY = 0.7;
+        // Lines fade out towards their sides instead of ending with a hard edge
+        const softLine = (() => {
+            const c = document.createElement('canvas');
+            c.width = 64;
+            c.height = 4;
+            const g = c.getContext('2d');
+            const grad = g.createLinearGradient(0, 0, 64, 0);
+            grad.addColorStop(0, 'rgba(255,255,255,0)');
+            grad.addColorStop(0.35, 'rgba(255,255,255,1)');
+            grad.addColorStop(0.65, 'rgba(255,255,255,1)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            g.fillStyle = grad;
+            g.fillRect(0, 0, 64, 4);
+            return new THREE.CanvasTexture(c);
+        })();
+        const mapMaterial = new THREE.MeshBasicMaterial({ map: softLine, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+
+        function setMapScene(scene) {
+            if (!roadPivot) return;
+            if (!map.root) {
+                map.root = new THREE.Group();
+                map.inner = new THREE.Group();
+                map.root.add(map.inner);
+                roadPivot.add(map.root);
+            }
+            clearMap();
+            map.scene = scene && scene.path && scene.path.length > 1 ? scene : null;
+            map.at = performance.now();
+            if (!map.scene) {
+                map.pose = null;
+                return;
+            }
+            map.path = smoothPolyline(scene.path);
+            map.pathS = [0];
+            for (let i = 1; i < map.path.length; i++) {
+                const a = map.path[i - 1], b = map.path[i];
+                map.pathS.push(map.pathS[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+            }
+            const [cx, cy] = scene.path[scene.carIndex || 0];
+            map.carS = alongPolyline(map.path, map.pathS, cx, cy);
+            const roads = scene.roads.map(r => ({ ...r, pts: smoothPolyline(r.pts) }));
+            map.lines = new THREE.Mesh(mapLinesGeometry(roads, cx, cy), mapMaterial);
+            map.inner.add(map.lines);
+            const place = (g, x, y, brg) => {
+                g.position.set(-x / METERS_PER_UNIT, roadMesh.position.y, y / METERS_PER_UNIT);
+                g.rotation.y = -brg * DEG;
+                map.inner.add(g);
+                map.objects.push(g);
+            };
+            for (const c of scene.cameras || []) place(createCameraPost(), c.x, c.y, c.brg);
+            for (const f of scene.features || []) place(createRoadFeature(f), f.x, f.y, f.brg);
+        }
+
+        function clearMap() {
+            if (map.lines) {
+                map.inner.remove(map.lines);
+                map.lines.geometry.dispose();
+                map.lines = null;
+            }
+            for (const p of map.objects) {
+                map.inner.remove(p);
+                p.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+            }
+            map.objects = [];
+        }
+
+        // Map polylines bend at every node: rounding the corners (at most 8 m) gives the curves a road really has
+        function smoothPolyline(pts) {
+            let p = pts;
+            for (let iter = 0; iter < 2; iter++) {
+                if (p.length < 3) return p;
+                const out = [p[0]];
+                for (let i = 0; i < p.length - 1; i++) {
+                    const [ax, ay] = p[i], [bx, by] = p[i + 1];
+                    const len = Math.hypot(bx - ax, by - ay);
+                    if (len < 1e-3) continue;
+                    const cut = Math.min(0.25, 8 / len);
+                    if (i > 0) out.push([ax + (bx - ax) * cut, ay + (by - ay) * cut]);
+                    if (i < p.length - 2) out.push([bx - (bx - ax) * cut, by - (by - ay) * cut]);
+                }
+                out.push(p[p.length - 1]);
+                p = out;
+            }
+            return p;
+        }
+
+        // Distance along the polyline of the point nearest to (x, y)
+        function alongPolyline(pts, S, x, y) {
+            let best = Infinity, along = 0;
+            for (let i = 0; i < pts.length - 1; i++) {
+                const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+                const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
+                const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2));
+                const d = Math.hypot(x - ax - dx * t, y - ay - dy * t);
+                if (d < best) {
+                    best = d;
+                    along = S[i] + (S[i + 1] - S[i]) * t;
+                }
+            }
+            return along;
+        }
+
+        // Samples every `step` metres with the left normal, averaged at the corners so lines stay joined
+        function resample(pts, step) {
+            const out = [];
+            let s = 0;
+            for (let i = 0; i < pts.length - 1; i++) {
+                const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+                const len = Math.hypot(bx - ax, by - ay);
+                if (len < 1e-3) continue;
+                const n = Math.max(1, Math.round(len / step));
+                for (let k = 0; k < n; k++) out.push({ x: ax + (bx - ax) * k / n, y: ay + (by - ay) * k / n, s: s + len * k / n, dx: (bx - ax) / len, dy: (by - ay) / len });
+                s += len;
+            }
+            const last = pts[pts.length - 1];
+            if (out.length) out.push({ x: last[0], y: last[1], s, dx: out[out.length - 1].dx, dy: out[out.length - 1].dy });
+            for (let i = 0; i < out.length; i++) {
+                const a = out[Math.max(0, i - 1)], b = out[i];
+                const nx = -(a.dy + b.dy), ny = a.dx + b.dx, l = Math.hypot(nx, ny) || 1;
+                b.nx = nx / l;
+                b.ny = ny / l;
+            }
+            return out;
+        }
+
+        function distToPolyline(pts, x, y) {
+            let best = Infinity;
+            for (let i = 0; i < pts.length - 1; i++) {
+                const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+                const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
+                const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2));
+                best = Math.min(best, Math.hypot(x - ax - dx * t, y - ay - dy * t));
+            }
+            return best;
+        }
+
+        // u runs across the quad, for the soft edges
+        function pushQuad(out, a, b, wa, wb) {
+            const u = 1 / METERS_PER_UNIT, y = roadMesh.position.y + 0.01;
+            const v = (p, w, side) => [-(p.x + p.nx * w * side) * u, y, (p.y + p.ny * w * side) * u];
+            const a0 = v(a, wa, -1), a1 = v(a, wa, 1), b0 = v(b, wb, -1), b1 = v(b, wb, 1);
+            out.pos.push(...a0, ...a1, ...b1, ...a0, ...b1, ...b0);
+            out.uv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+        }
+
+        function quadsGeometry(out) {
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.Float32BufferAttribute(out.pos, 3));
+            g.setAttribute('uv', new THREE.Float32BufferAttribute(out.uv, 2));
+            return g;
+        }
+
+        // Painted lines of every road: solid edges, dashed lane separators; none inside another carriageway
+        function mapLinesGeometry(sceneRoads, cx, cy) {
+            const roads = sceneRoads.map(r => {
+                const W = (r.fwd + r.back) * r.laneW;
+                const xs = r.pts.map(p => p[0]), ys = r.pts.map(p => p[1]);
+                return { ...r, W, box: [Math.min(...xs) - W, Math.min(...ys) - W, Math.max(...xs) + W, Math.max(...ys) + W] };
+            });
+            const insideOther = (road, x, y) => roads.some(o => o !== road && x > o.box[0] && x < o.box[2] && y > o.box[1] && y < o.box[3]
+                && distToPolyline(o.pts, x, y) < o.W / 2 - 0.3);
+            const out = { pos: [], uv: [] };
+            for (const r of roads) {
+                // Offsets from the centre line, + left of pts: lanes along pts drive on the right
+                const lines = [{ o: -r.W / 2 }, { o: r.W / 2 }];
+                for (let k = 1; k < r.fwd + r.back; k++) {
+                    if (k === r.fwd && !r.center) continue;
+                    lines.push({ o: -r.W / 2 + k * r.laneW, dashed: true });
+                }
+                const period = r.dash[0] + r.dash[1];
+                const samples = resample(r.pts, MAP_STEP);
+                for (const line of lines) {
+                    for (let i = 0; i < samples.length - 1; i++) {
+                        const a = samples[i], b = samples[i + 1];
+                        const mx = (a.x + b.x) / 2 + (a.nx + b.nx) / 2 * line.o, my = (a.y + b.y) / 2 + (a.ny + b.ny) / 2 * line.o;
+                        const far = Math.hypot(mx - cx, my - cy);
+                        if (far > MAP_RANGE) continue;
+                        if (line.dashed && (((a.s + b.s) / 2 + (r.s0 || 0)) % period) > r.dash[0]) continue;
+                        if (r.clip && Math.hypot(mx - r.clip.x, my - r.clip.y) > r.clip.r) continue;
+                        if (insideOther(r, mx, my)) continue;
+                        // Real 15 cm lines (plus their soft sides), wider far away so they stay visible
+                        const w = Math.max(0.22, far * 0.005) / 2;
+                        pushQuad(out, { ...a, x: a.x + a.nx * line.o, y: a.y + a.ny * line.o }, { ...b, x: b.x + b.nx * line.o, y: b.y + b.ny * line.o }, w, w);
+                    }
+                }
+            }
+            return quadsGeometry(out);
+        }
+
+        function mapPathPoint(s) {
+            const S = map.pathS, P = map.path;
+            let lo = 0, hi = S.length - 2;
+            s = Math.max(0, Math.min(S[S.length - 1], s));
+            while (lo < hi) {
+                const mid = (lo + hi + 1) >> 1;
+                if (S[mid] <= s) lo = mid; else hi = mid - 1;
+            }
+            const t = S[lo + 1] > S[lo] ? (s - S[lo]) / (S[lo + 1] - S[lo]) : 0;
+            return { x: P[lo][0] + (P[lo + 1][0] - P[lo][0]) * t, y: P[lo][1] + (P[lo + 1][1] - P[lo][1]) * t };
+        }
+
+        // The car moves along the path between two fixes; the map turns around it. false when there is no map
+        function updateMap(dt) {
+            const fresh = map.scene && roadCurveEnabled && performance.now() - map.at < 3000;
+            const shown = !!fresh && roadCurrentOpacity > 0.01;
+            if (map.root) map.root.visible = shown;
+            if (shown !== map.attributed) {
+                map.attributed = shown;
+                document.body.classList.toggle('osm', shown);
+            }
+            if (!fresh) return false;
+            const s = map.carS + (currentKmh / 3.6) * (performance.now() - map.at) / 1000;
+            const p = mapPathPoint(s);
+            // Heading over a few metres, so the kinks between OSM nodes don't jerk the view
+            const a = mapPathPoint(s - 4), b = mapPathPoint(s + 4);
+            const brg = Math.atan2(b.x - a.x, b.y - a.y);
+            const off = map.scene.car.offset || 0;
+            const target = { x: p.x - Math.cos(brg) * off, y: p.y + Math.sin(brg) * off, brg };
+            if (!map.pose) map.pose = { ...target };
+            const k = 1 - Math.exp(-dt / MAP_POSE_S);
+            map.pose.x += (target.x - map.pose.x) * k;
+            map.pose.y += (target.y - map.pose.y) * k;
+            let d = target.brg - map.pose.brg;
+            d = Math.atan2(Math.sin(d), Math.cos(d));
+            map.pose.brg += d * k;
+            map.inner.position.set(map.pose.x / METERS_PER_UNIT, 0, -map.pose.y / METERS_PER_UNIT);
+            map.root.rotation.y = map.pose.brg;
+            mapMaterial.color.set(isDarkTheme ? 0xcccccc : 0x999999);
+            mapMaterial.opacity = roadCurrentOpacity * MAP_LINE_OPACITY;
+            for (const g of map.objects) {
+                g.traverse(o => { if (o.material) o.material.opacity = (roadCurrentOpacity / 0.8) * (o.material.userData.alpha || 1); });
+            }
+            return true;
+        }
+
+        // Speed limit from a sign mapped on the road being driven, null when unknown: { value (display unit), kmh }
+        let speedLimitKmh = 0;
+        function setSpeedLimit(limit) {
+            const el = document.getElementById('speedLimit');
+            speedLimitKmh = limit ? limit.kmh : 0;
+            el.style.display = limit ? 'block' : 'none';
+            if (limit) el.textContent = limit.value;
+            updateOverspeed();
+        }
+
+        function updateOverspeed() {
+            // Same margin as the speed cameras' tolerance
+            const over = k => k > 0 && currentKmh > k + Math.max(5, k * 0.05);
+            document.getElementById('speedOverlay').classList.toggle('over', over(speedLimitKmh));
+            const cameraLimit = speedCamera ? speedCamera.limitKmh || speedLimitKmh : 0;
+            document.getElementById('speedCamera').classList.toggle('over', over(cameraLimit));
+        }
+
+        // Next speed camera on the road ahead, null when none: { distance (text in the display unit), limitKmh }
+        let speedCamera = null;
+        function setSpeedCamera(cam) {
+            speedCamera = cam || null;
+            document.getElementById('speedCamera').style.display = speedCamera ? 'block' : 'none';
+            if (speedCamera) {
+                document.getElementById('speedCameraText').textContent =
+                    (localizedStrings.speedCamera || 'Speed camera in {0}').replace('{0}', cam.distance);
+            }
+            showMapNotice();
+            updateOverspeed();
+        }
+
+        // "No map here" with the area to download (text already localized), null to hide it
+        let mapNotice = null;
+        function setMapNotice(text) {
+            mapNotice = text || null;
+            document.getElementById('mapNoticeText').textContent = mapNotice || '';
+            showMapNotice();
+        }
+
+        function showMapNotice() {
+            document.getElementById('mapNotice').style.display = mapNotice && !speedCamera ? 'block' : 'none';
+        }
+
+        // Whether a tap at (x, y), in CSS pixels, hit the notice: the app then opens the download
+        function mapNoticeHit(x, y) {
+            const el = document.getElementById('mapNotice');
+            if (el.style.display !== 'block') return false;
+            const r = el.getBoundingClientRect();
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        }
+
+        // Real-size objects of the map's road features; +z is the way the car meets them, +x its left
+        function createRoadFeature(f) {
+            const u = 1 / METERS_PER_UNIT;
+            const g = new THREE.Group();
+            const paint = isDarkTheme ? 0xcccccc : 0x999999;
+            const box = (w, h, d, color, x, y, z, alpha = 1) => {
+                const material = new THREE.MeshLambertMaterial({ color, transparent: true });
+                material.userData.alpha = alpha;
+                const mesh = new THREE.Mesh(new THREE.BoxGeometry(w * u, h * u, d * u), material);
+                mesh.position.set(x * u, y * u, z * u);
+                g.add(mesh);
+                return mesh;
+            };
+            const W = f.W, right = -W / 2;
+            if (f.k === 'crossing') {
+                // Zebra: 0.5 m white stripes over the whole carriageway, 3 m long
+                for (let x = right + 0.5; x <= W / 2 - 0.25; x += 1) box(0.5, 0.01, 3, 0xf0f0f0, x, 0.01, 0);
+            } else if (f.k === 'bump') {
+                // Rubber bump in yellow and black, 6 cm high
+                for (let x = right + 0.25, i = 0; x < W / 2; x += 0.5, i++) box(0.5, 0.06, 0.6, i % 2 ? 0x222222 : 0xffc107, x, 0.03, 0);
+            } else if (f.k === 'rail') {
+                // Two rails along the track's real direction, a St Andrew's cross on the right before them
+                const phi = (f.rb != null ? f.rb - f.brg : 90) * DEG;
+                const len = Math.min(24, W / Math.max(0.3, Math.abs(Math.sin(phi))) + 8);
+                for (const off of [-0.72, 0.72]) {
+                    const rail = box(0.07, 0.12, len, 0x9e9e9e, Math.cos(phi) * off, 0.06, Math.sin(phi) * off);
+                    rail.rotation.y = -phi;
+                }
+                box(0.08, 2.2, 0.08, 0x8a8a8a, right - 1, 1.1, -6);
+                for (const tilt of [Math.PI / 4, -Math.PI / 4]) box(1.2, 0.18, 0.03, 0xf5f5f5, right - 1, 2.0, -6.05).rotation.z = tilt;
+            } else if (f.k === 'signals') {
+                // Stop line across the car's lanes, light on a pole at the right facing the approaching cars
+                box(f.travelW, 0.01, 0.5, paint, right + f.travelW / 2, 0.01, -1, MAP_LINE_OPACITY);
+                box(0.1, 2.8, 0.1, 0x555555, right - 0.6, 1.4, 0);
+                box(0.32, 0.95, 0.25, 0x222222, right - 0.6, 3.2, 0);
+                [0x7a2020, 0x7a6420, 0x207a35].forEach((color, i) => {
+                    const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.1 * u, 0.1 * u, 0.04 * u, 16),
+                        new THREE.MeshLambertMaterial({ color, transparent: true }));
+                    lamp.rotation.x = Math.PI / 2;
+                    lamp.position.set((right - 0.6) * u, (3.5 - i * 0.3) * u, -0.14 * u);
+                    g.add(lamp);
+                });
+            }
+            return g;
+        }
+
+        // Fixed speed camera at real size: a 0.6 m box on a 2.6 m pole, lens towards the approaching traffic (-z)
+        function createCameraPost() {
+            const u = 1 / METERS_PER_UNIT;
+            const part = (geometry, color, x, y, z) => {
+                const mesh = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color, transparent: true }));
+                mesh.position.set(x, y, z);
+                return mesh;
+            };
+            const lens = part(new THREE.CylinderGeometry(0.12 * u, 0.12 * u, 0.05 * u, 20), 0x111111, 0, 2.85 * u, -0.36 * u);
+            lens.rotation.x = Math.PI / 2;
+            const group = new THREE.Group();
+            group.add(
+                part(new THREE.CylinderGeometry(0.05 * u, 0.05 * u, 2.6 * u, 10), 0x8a8a8a, 0, 1.3 * u, 0),
+                part(new THREE.BoxGeometry(0.45 * u, 0.5 * u, 0.7 * u), 0xb0b0b0, 0, 2.85 * u, 0),
+                lens,
+                part(new THREE.BoxGeometry(0.3 * u, 0.1 * u, 0.04 * u), 0xffe082, 0, 3.03 * u, -0.36 * u)
+            );
+            return group;
+        }
+
+        function setUpcomingTurn(t) {
+            maneuver.navigating = !!t;
+            maneuver.dir = t && t.dir ? Math.sign(t.dir) : 0;
+            if (!t) return;
+            maneuver.angle = Math.min(180, Math.max(10, t.angle || 90)) * DEG;
+            maneuver.meters = typeof t.meters === 'number' ? t.meters : Infinity;
+            maneuver.at = performance.now();
+        }
+
+        function setRoadCurveEnabled(enabled) {
+            roadCurveEnabled = !!enabled;
+        }
+
+        // Navigation apps refresh the distance about once per second: in between, the car keeps moving
+        function estimatedMeters() {
+            return maneuver.meters - (currentKmh / 3.6) * (performance.now() - maneuver.at) / 1000;
+        }
+
+        function bendTargets() {
+            const none = { curvature: 0, angle: bend.angle, startZ: FAR_Z + 10 };
+            if (!roadCurveEnabled || !maneuver.navigating || !maneuver.dir) return none;
+            const v = currentKmh / 3.6;
+            const lookahead = Math.min(600, Math.max(120, v * 12));     // the bend shows up ~12 s ahead
+            const meters = estimatedMeters();
+            if (meters > lookahead || meters < -40) return none;
+            const unitsPerMeter = (FAR_Z - TURN_Z) / lookahead;
+            const startZ = TURN_Z + meters * unitsPerMeter;  // passes under the car after the turn
+            // Crossroad turns (≥ 60°) are taken at walking pace whatever the speed; slight ones at speed
+            const turnSpeed = maneuver.angle >= 60 * DEG ? 20 / 3.6 * Math.min(1, (90 * DEG) / maneuver.angle) : v;
+            const vEff = Math.min(v, turnSpeed);
+            const radiusMeters = Math.max(4, (vEff * vEff) / LATERAL_ACCEL);
+            const radius = Math.min(MAX_RADIUS, Math.max(MIN_RADIUS, (radiusMeters / METERS_PER_UNIT) * VISUAL_TIGHTEN));
+            return { curvature: maneuver.dir / radius, angle: maneuver.angle, startZ, unitsPerMeter };
+        }
+
+        // Centerline point and heading at forward distance z: straight, then an arc, then straight again
+        function centerline(z) {
+            const s = z - bend.startZ;
+            if (s <= 0 || bend.curvature === 0) return { x: 0, z, phi: 0 };
+            const k = bend.curvature, r = 1 / Math.abs(k), sign = Math.sign(k);
+            const arcLen = r * bend.angle;
+            const a = Math.min(s, arcLen) / r;
+            let x = sign * r * (1 - Math.cos(a));
+            let zz = bend.startZ + r * Math.sin(a);
+            if (s > arcLen) {
+                const rest = s - arcLen;
+                x += sign * rest * Math.sin(bend.angle);
+                zz += rest * Math.cos(bend.angle);
+            }
+            return { x, z: zz, phi: sign * a };
+        }
+
+        function bendRoad() {
+            if (!roadMesh || !roadBase) return;
+            const now = performance.now();
+            const dt = bend.lastAt ? Math.min(0.1, (now - bend.lastAt) / 1000) : 0;
+            bend.lastAt = now;
+            if (bend.locked) {
+                // Until the car enters it, the bend still tightens as the car slows down for it
+                const t = bendTargets();
+                if (bend.startZ > 0 && Math.sign(t.curvature) === Math.sign(bend.curvature)
+                    && Math.abs(t.curvature) > Math.abs(bend.curvature)) {
+                    bend.curvature += (t.curvature - bend.curvature) * 0.06;
+                    bend.angle += (t.angle - bend.angle) * 0.06;
+                }
+                bend.startZ -= (currentKmh / 3.6) * dt * bend.unitsPerMeter;
+                const arcLen = bend.angle / Math.abs(bend.curvature);
+                // Once the whole bend is behind the road's start the picture is a straight road again
+                if (!roadCurveEnabled || !maneuver.navigating || bend.startZ + arcLen < NEAR_Z) {
+                    Object.assign(bend, { locked: false, curvature: 0, startZ: FAR_Z + 10 });
+                }
+            } else {
+                const t = bendTargets();
+                bend.curvature += (t.curvature - bend.curvature) * 0.06;
+                if (Math.abs(bend.curvature) < 1e-4 && t.curvature === 0) bend.curvature = 0;
+                bend.angle += (t.angle - bend.angle) * 0.06;
+                bend.startZ += (t.startZ - bend.startZ) * 0.15;
+                if (t.unitsPerMeter) bend.unitsPerMeter = t.unitsPerMeter;
+                // Navigation apps jump to the next maneuver right at the turn: lock just before reaching it
+                if (t.curvature !== 0 && bend.curvature !== 0 && bend.startZ <= TURN_Z + 2) bend.locked = true;
+            }
+
+            // Seen from the car: inside the bend the road turns around it, so the car always follows the lane
+            const car = centerline(0);
+            const cos = Math.cos(car.phi), sin = Math.sin(car.phi);
+            const pos = roadMesh.geometry.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const x0 = roadBase[i * 3];
+                const z = roadMesh.position.z - roadBase[i * 3 + 1];   // local y maps to world -z
+                const c = centerline(z);
+                // Offset along the normal keeps the lane width constant through the bend
+                const dx = c.x + x0 * Math.cos(c.phi) - car.x;
+                const dz = c.z - x0 * Math.sin(c.phi) - car.z;
+                pos.array[i * 3] = dx * cos - dz * sin;
+                pos.array[i * 3 + 1] = roadMesh.position.z - (dx * sin + dz * cos);
+            }
+            pos.needsUpdate = true;
+        }
+
+        // Keep the driving view while stopped at a junction or in stop-and-go traffic during navigation
+        const HOLD_NEAR_TURN_M = 60;
+        const HOLD_AFTER_STOP_MS = 20000;
+        let lastMovingAt = 0;
+        let lastFrameAt = performance.now();
+
+        function holdDriveView() {
+            const now = performance.now();
+            if (currentSpeed > speedThreshold) lastMovingAt = now;
+            if (!maneuver.navigating) return false;
+            const meters = estimatedMeters();
+            const nearTurn = maneuver.dir !== 0 && meters < HOLD_NEAR_TURN_M && meters > -20;
+            return nearTurn || (lastMovingAt > 0 && now - lastMovingAt < HOLD_AFTER_STOP_MS);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const frameAt = performance.now();
+            const frameDt = Math.min(0.1, (frameAt - lastFrameAt) / 1000);
+            lastFrameAt = frameAt;
+            
+            if (model && editMode) {
+                controls.enabled = !draggingWheel && !draggingLamp;
+                editorTick();
+            } else if (model) {
+                // Use GPS speed
+                const effectiveSpeed = animationEnabled ? currentSpeed : 0;
+                const hold = holdDriveView();
+                const wantsDrive = effectiveSpeed > speedThreshold || (animationEnabled && hold);
+                
+                if (wantsDrive && !isThirdPersonView) {
+                    targetCameraAngle = drivePose.az;
+                    isThirdPersonView = true;
+                } else if (!wantsDrive && isThirdPersonView) {
+                    targetCameraAngle = parkPose.az;
+                    isThirdPersonView = false;
+                }
+                
+                // Animate road based on speed
+                if (wantsDrive && roadLinesEnabled) {
+                    roadTargetOpacity = 0.8;
+                    
+                    // Lines pass at the car's real speed, like the speed camera's post
+                    if (roadTexture) {
+                        const unitsPerSecond = (animationEnabled ? currentKmh : 0) / 3.6 / METERS_PER_UNIT;
+                        roadOffset -= unitsPerSecond * frameDt / ROAD_TEXTURE_UNITS;
+                        roadTexture.offset.y = roadOffset;
+                        roadTexture.needsUpdate = true;
+                    }
+                } else {
+                    roadTargetOpacity = 0;
+                    
+                    // Keep current texture position when not moving
+                    if (roadTexture) {
+                        roadOffset = roadTexture.offset.y;
+                    }
+                }
+                
+                // Smooth opacity transition for road
+                if (roadMesh && roadMesh.material) {
+                    const opacityDiff = roadTargetOpacity - roadCurrentOpacity;
+                    if (Math.abs(opacityDiff) > 0.01) {
+                        roadCurrentOpacity += opacityDiff * roadTransitionSpeed;
+                    } else {
+                        roadCurrentOpacity = roadTargetOpacity;
+                    }
+                    const onMap = updateMap(frameDt);
+                    roadMesh.material.opacity = roadCurrentOpacity;
+                    roadMesh.visible = !onMap && roadCurrentOpacity > 0.01;
+                    if (roadMesh.visible) bendRoad();
+                }
+                
+                // Smoothly move the camera towards the active pose, unless the user is looking around while parked
+                controls.enabled = true;
+                if (isThirdPersonView) {
+                    // While driving a drag only nudges the camera, which springs straight back
+                    userTouching = false;
+                    userOrbitUntil = 0;
+                }
+                const userOrbiting = !isThirdPersonView && (userTouching || performance.now() < userOrbitUntil);
+                if (!userOrbiting) {
+                    const pose = isThirdPersonView ? drivePose : parkPose;
+                    const transitionSpeed = 0.03;
+                    camDist += (pose.d - camDist) * 0.05;
+                    camera.position.y += (pose.h - camera.position.y) * 0.05;
+
+                    const currentAngle = Math.atan2(camera.position.x - FOCUS.x, camera.position.z - FOCUS.z);
+                    let deltaAngle = targetCameraAngle - currentAngle;
+                    if (deltaAngle > Math.PI) deltaAngle -= 2 * Math.PI;
+                    if (deltaAngle < -Math.PI) deltaAngle += 2 * Math.PI;
+                    const angle = Math.abs(deltaAngle) > 0.01 ? currentAngle + deltaAngle * transitionSpeed : targetCameraAngle;
+                    camera.position.x = FOCUS.x + Math.sin(angle) * camDist;
+                    camera.position.z = FOCUS.z + Math.cos(angle) * camDist;
+
+                    camera.lookAt(FOCUS);
+                    controls.target.copy(FOCUS);
+                }
+            }
+            
+            controls.update();
+            updateTireOverlay();
+            updateHeadlights();
+            renderer.render(scene, camera);
+        }
+        
+        // Function to update speed from Android app: speed in the display unit, kmh for the road physics
+        function updateSpeed(speed, kmh) {
+            const previousSpeed = currentSpeed;
+            currentSpeed = speed;
+            currentKmh = typeof kmh === 'number' ? kmh : speed;
+            updateOverspeed();
+            
+            // Force immediate view mode check when crossing threshold
+            if (model) {
+                if (previousSpeed > speedThreshold && speed <= speedThreshold && isThirdPersonView && !holdDriveView()) {
+                    targetCameraAngle = parkPose.az;
+                    isThirdPersonView = false;
+                    roadTargetOpacity = 0;
+                } else if (previousSpeed <= speedThreshold && speed > speedThreshold && !isThirdPersonView) {
+                    targetCameraAngle = drivePose.az;
+                    isThirdPersonView = true;
+                    roadTargetOpacity = 0.8;
+                }
+            }
+            
+            // Update overlay display
+            const speedOverlay = document.getElementById('speedOverlay');
+            if (speedOverlay) {
+                const speedValue = speedOverlay.querySelector('.speed-value');
+                if (speedValue) {
+                    speedValue.textContent = speed;
+                }
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // Localization functions
+        function setLocalizedStrings(strings) {
+            localizedStrings = strings;
+            // Update existing UI elements
+            document.getElementById('loading-text').textContent = localizedStrings.loading;
+            document.getElementById('speed-label').textContent = localizedStrings.speedLabel;
+            document.getElementById('speed-unit').textContent = localizedStrings.speedUnit;
+        }
+        
+        // Theme management functions
+        function setTheme(theme) {
+            const shouldBeDark = theme === 'dark';
+            if (shouldBeDark !== isDarkTheme) {
+                isDarkTheme = shouldBeDark;
+                document.body.classList.toggle('dark-theme', isDarkTheme);
+                
+                // Update scene background
+                updateSceneBackground();
+                
+                // Recreate road with new colors if it exists
+                if (roadMesh && scene) {
+                    // Store current opacity state before recreating
+                    const currentOpacity = roadCurrentOpacity;
+                    const targetOpacity = roadTargetOpacity;
+                    
+                    roadPivot.remove(roadMesh);
+                    createRoad();
+                    
+                    // Restore opacity state after recreation
+                    roadCurrentOpacity = currentOpacity;
+                    roadTargetOpacity = targetOpacity;
+                    
+                    // Apply current opacity immediately
+                    if (roadMesh && roadMesh.material) {
+                        roadMesh.material.opacity = roadCurrentOpacity;
+                        roadMesh.visible = roadCurrentOpacity > 0.01;
+                    }
+                }
+            }
+        }
+        
+        function updateSceneBackground() {
+            if (scene) {
+                const bgColor = isDarkTheme ? 0x242424 : 0xf0f0f0;
+                scene.background = new THREE.Color(bgColor);
+                // The map's far roads fade into the background
+                scene.fog = new THREE.Fog(bgColor, 60, 180);
+            }
+        }
+
+        function setAnimationEnabled(enabled) {
+            animationEnabled = enabled;
+            if (!enabled) {
+                // Force back to side view and hide road immediately
+                if (isThirdPersonView) {
+                    targetCameraAngle = parkPose.az;
+                    isThirdPersonView = false;
+                }
+                roadTargetOpacity = 0;
+            }
+        }
+
+        function setSpeedVisible(visible) {
+            // Only the number: the speed limit and the speed camera banner hang on the same box
+            document.getElementById('speedOverlay').classList.toggle('hidden-speed', !visible);
+        }
+
+        // { arrivalLabel, arrival, remainingLabel, remaining } while navigating, null otherwise
+        function setTripInfo(info) {
+            document.body.classList.toggle('navigating', !!info);
+            if (!info) return;
+            document.getElementById('trip-arrival-label').textContent = info.arrivalLabel || '';
+            document.getElementById('trip-arrival-value').textContent = info.arrival || '';
+            document.getElementById('trip-remaining-label').textContent = info.remainingLabel || '';
+            document.getElementById('trip-remaining-value').textContent = info.remaining || '';
+            document.getElementById('tripArrival').style.visibility = info.arrival ? '' : 'hidden';
+            document.getElementById('tripRemaining').style.visibility = info.remaining ? '' : 'hidden';
+        }
+
+        function setRoadLinesConfig(enabled, style) {
+            roadLinesEnabled = enabled;
+            if (style) roadLinesStyle = style;
+            if (roadMesh && scene) {
+                const prevOpacity = roadCurrentOpacity;
+                const prevTarget = roadTargetOpacity;
+                roadPivot.remove(roadMesh);
+                createRoad();
+                if (!roadLinesEnabled) {
+                    roadCurrentOpacity = 0;
+                    roadTargetOpacity = 0;
+                    if (roadMesh && roadMesh.material) {
+                        roadMesh.material.opacity = 0;
+                        roadMesh.visible = false;
+                    }
+                } else {
+                    roadCurrentOpacity = prevOpacity;
+                    roadTargetOpacity = prevTarget;
+                    if (roadMesh && roadMesh.material) {
+                        roadMesh.material.opacity = roadCurrentOpacity;
+                        roadMesh.visible = roadCurrentOpacity > 0.01;
+                    }
+                }
+            }
+        }
+
+        // ---- Model placement ----
+
+        const FRONT_RE = /head.?light|front|anterior/i;
+        const REAR_RE = /tail.?light|brake.?light|rear|posterior|reverse|exhaust/i;
+
+        function partsCenter(root, re) {
+            const sum = new THREE.Vector3(), c = new THREE.Vector3();
+            let n = 0;
+            root.traverse(o => {
+                if (!o.isMesh) return;
+                const names = [o.name].concat([].concat(o.material).map(m => m && m.name)).join(' ');
+                if (!re.test(names)) return;
+                new THREE.Box3().setFromObject(o).getCenter(c);
+                sum.add(c);
+                n++;
+            });
+            return n ? sum.divideScalar(n) : null;
+        }
+
+        // +1 if the front of the car points towards +axis, -1 otherwise
+        function frontSign(root, axis, box) {
+            const mid = box.getCenter(new THREE.Vector3())[axis];
+            const front = partsCenter(root, FRONT_RE), rear = partsCenter(root, REAR_RE);
+            if (front && rear && Math.abs(front[axis] - rear[axis]) > 1e-3) return Math.sign(front[axis] - rear[axis]);
+            if (front && Math.abs(front[axis] - mid) > 1e-3) return Math.sign(front[axis] - mid);
+            if (rear && Math.abs(rear[axis] - mid) > 1e-3) return -Math.sign(rear[axis] - mid);
+            // No named parts: the cabin (top of the car) usually sits behind the middle
+            const top = box.max.y - (box.max.y - box.min.y) * 0.15, v = new THREE.Vector3();
+            let sum = 0, n = 0;
+            root.traverse(o => {
+                if (!o.isMesh || !o.geometry.attributes.position) return;
+                const pos = o.geometry.attributes.position;
+                for (let i = 0; i < pos.count; i++) {
+                    v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+                    if (v.y >= top) { sum += v[axis]; n++; }
+                }
+            });
+            return n && sum / n > mid ? -1 : 1;
+        }
+
+        // Yaw that turns the front of the car towards +Z, where the road runs
+        function autoYaw(root) {
+            root.position.set(0, 0, 0);
+            root.rotation.set(0, 0, 0);
+            root.scale.setScalar(1);
+            root.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(root);
+            const size = box.getSize(new THREE.Vector3());
+            if (size.x > size.z) return frontSign(root, 'x', box) > 0 ? -Math.PI / 2 : Math.PI / 2;
+            return frontSign(root, 'z', box) > 0 ? 0 : Math.PI;
+        }
+
+        function fitModel(root, yaw) {
+            root.position.set(0, 0, 0);
+            root.rotation.set(0, yaw, 0);
+            root.scale.setScalar(1);
+            root.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(root);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            const s = MODEL_SIZE / Math.max(size.x, size.y, size.z);
+            root.scale.setScalar(s);
+            root.position.set(-center.x * s, MODEL_FLOOR - box.min.y * s, -center.z * s);
+            root.updateMatrixWorld(true);
+            root.userData.longAxisX = size.x > size.z;
+        }
+
+        // Road along the car's long axis, pointing away from the camera
+        function snapRoadYaw(cameraAz) {
+            const candidates = model.userData.longAxisX ? [Math.PI / 2, -Math.PI / 2] : [0, Math.PI];
+            const want = cameraAz + Math.PI;
+            const diff = a => Math.abs(Math.atan2(Math.sin(a - want), Math.cos(a - want)));
+            return candidates.reduce((best, c) => diff(c) < diff(best) ? c : best);
+        }
+
+        function setCameraPose(p) {
+            camera.position.set(FOCUS.x + Math.sin(p.az) * p.d, p.h, FOCUS.z + Math.cos(p.az) * p.d);
+            camDist = p.d;
+            targetCameraAngle = p.az;
+            controls.target.copy(FOCUS);
+            camera.lookAt(FOCUS);
+            controls.update();
+        }
+
+        function currentCameraPose() {
+            const dx = camera.position.x - FOCUS.x, dz = camera.position.z - FOCUS.z;
+            return { az: Math.atan2(dx, dz), h: camera.position.y, d: Math.hypot(dx, dz) };
+        }
+
+        // ---- Colours ----
+
+        // Glass and other see-through parts keep their look
+        function recolorable(m) {
+            return !!(m && m.color && !m.transparent && m.opacity >= 1);
+        }
+
+        function forEachMaterial(root, fn) {
+            const seen = new Set();
+            root.traverse(o => {
+                if (!o.isMesh) return;
+                [].concat(o.material).forEach(m => {
+                    if (m && !seen.has(m)) { seen.add(m); fn(m); }
+                });
+            });
+        }
+
+        // Average colour of a texture, tinted by the material colour; grey when the image can't be read
+        function textureColor(m) {
+            const c = new THREE.Color(0x808080);
+            try {
+                const img = m.map.image;
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 8;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, 8, 8);
+                const px = ctx.getImageData(0, 0, 8, 8).data;
+                let r = 0, g = 0, b = 0, n = 0;
+                for (let i = 0; i < px.length; i += 4) {
+                    if (px[i + 3] < 128) continue;
+                    r += px[i]; g += px[i + 1]; b += px[i + 2]; n++;
+                }
+                if (n) c.setRGB(r / n / 255, g / n / 255, b / n / 255);
+            } catch (e) {
+                console.warn('Texture colour not readable:', e);
+            }
+            return c.multiply(m.color);
+        }
+
+        function rememberOriginals(root) {
+            let index = 0;
+            forEachMaterial(root, m => {
+                // A textured material has its colour in the image: keyed by name, shown with the image's average
+                const textured = !!(m.map && m.color);
+                const key = !m.color ? null
+                    : textured ? 'tex-' + (m.name || 'm' + index).replace(/[^\w-]/g, '_')
+                    : m.color.getHexString();
+                m.userData.orig = {
+                    key,
+                    hex: m.color ? '#' + (textured ? textureColor(m) : m.color).getHexString() : null,
+                    color: m.color ? m.color.getHex() : 0,
+                    map: m.map || null,
+                    metalness: m.metalness,
+                    roughness: m.roughness,
+                    emissive: m.emissive ? m.emissive.getHex() : 0
+                };
+                index++;
+            });
+        }
+
+        // Overridden colours get the same glossy, non-metallic paint as the default model; a texture gives way
+        // to the plain colour and comes back on reset
+        function applyColors() {
+            forEachMaterial(model, m => {
+                const o = m.userData.orig;
+                if (!o || !recolorable(m)) return;
+                const hex = colorOverrides[o.key];
+                const map = hex ? null : o.map;
+                if (m.map !== map) {
+                    m.map = map;
+                    m.needsUpdate = true;
+                }
+                if (hex) {
+                    m.color.set(hex);
+                    m.metalness = 0;
+                    m.roughness = 0;
+                } else {
+                    m.color.setHex(o.color);
+                    m.metalness = o.metalness;
+                    m.roughness = o.roughness;
+                }
+            });
+        }
+
+        // Recolourable colours ranked by surface area; details under 1% are skipped
+        function colorGroups() {
+            const groups = new Map();
+            const originals = new Map();
+            const tri = new THREE.Triangle(), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+            model.updateMatrixWorld(true);
+            model.traverse(o => {
+                if (!o.isMesh || !o.geometry.attributes.position) return;
+                const g = o.geometry, pos = g.attributes.position, idx = g.index, mats = [].concat(o.material);
+                const total = idx ? idx.count : pos.count;
+                const ranges = g.groups.length ? g.groups : [{ start: 0, count: total, materialIndex: 0 }];
+                for (const r of ranges) {
+                    const m = mats[r.materialIndex || 0];
+                    if (!recolorable(m) || !m.userData.orig) continue;
+                    const end = Math.min(r.start + r.count, total);
+                    let area = 0;
+                    for (let i = r.start; i + 2 < end; i += 3) {
+                        a.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(o.matrixWorld);
+                        b.fromBufferAttribute(pos, idx ? idx.getX(i + 1) : i + 1).applyMatrix4(o.matrixWorld);
+                        c.fromBufferAttribute(pos, idx ? idx.getX(i + 2) : i + 2).applyMatrix4(o.matrixWorld);
+                        area += tri.set(a, b, c).getArea();
+                    }
+                    const key = m.userData.orig.key;
+                    groups.set(key, (groups.get(key) || 0) + area);
+                    if (!originals.has(key)) originals.set(key, m.userData.orig.hex);
+                }
+            });
+            const sum = [...groups.values()].reduce((t, v) => t + v, 0) || 1;
+            return [...groups.entries()]
+                .map(([key, area]) => ({ key, original: originals.get(key), color: colorOverrides[key] || originals.get(key), pct: Math.round(100 * area / sum) }))
+                .filter(g => g.pct >= 1)
+                .sort((x, y) => y.pct - x.pct)
+                .slice(0, 6);
+        }
+
+        // ---- Per-model configuration ----
+
+        function applyConfig() {
+            const cfg = modelConfig || {};
+            const yaw = typeof cfg.yaw === 'number' ? cfg.yaw : autoYaw(model);
+            model.userData.yaw = yaw;
+            fitModel(model, yaw);
+            colorOverrides = Object.assign({}, cfg.colors);
+            applyColors();
+            parkPose = cfg.park || { ...DEFAULT_PARK };
+            drivePose = cfg.drive || { ...DEFAULT_DRIVE };
+            roadPivot.rotation.y = typeof cfg.roadYaw === 'number' ? cfg.roadYaw : snapRoadYaw(drivePose.az);
+            setCameraPose(isThirdPersonView ? drivePose : parkPose);
+            // Wheel positions are suggested lazily (it scans every vertex), saved ones are used as they are
+            wheelsEdited = !!(cfg.wheels && WHEEL_IDS.every(id => cfg.wheels[id]));
+            wheels = wheelsEdited ? cloneWheels(cfg.wheels) : null;
+            suggestedWheels = null;
+            wheelsRoadYaw = roadPivot.rotation.y;
+            // Saved lamps belong to the driving direction they were placed with
+            const savedLights = cfg.lights && cfg.lights.L && cfg.lights.R &&
+                Math.abs((cfg.lights.yaw || 0) - roadPivot.rotation.y) < 1e-3 ? cfg.lights : null;
+            lamps = savedLights ? { L: { ...savedLights.L }, R: { ...savedLights.R } } : null;
+            lampsEdited = !!savedLights;
+            lampsRoadYaw = roadPivot.rotation.y;
+            resetBeams();
+        }
+
+        // Call before loadModelFromUri; null restores automatic placement and original colours
+        function setModelConfig(cfg) {
+            modelConfig = cfg;
+            if (model) applyConfig();
+        }
+
+        function loadModelFromUri(url) {
+            if (!url || url === '') return;
+            lastModelUrl = url;
+            loadRetries = 0;
+            startModelLoad(url);
+        }
+
+        // Android calls this when the screen comes back: a failed model gets another chance
+        function retryModelLoad() {
+            if (loadState !== 'error' || !lastModelUrl) return;
+            loadRetries = 0;
+            startModelLoad(lastModelUrl);
+        }
+
+        function startModelLoad(url) {
+            if (model && scene) {
+                scene.remove(model);
+                model = null;
+            }
+            const token = ++loadToken;
+            loadState = 'loading';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading-text').textContent = localizedStrings.loading;
+
+            const loader = new THREE.GLTFLoader();
+            loader.load(
+                url,
+                function(gltf) {
+                    if (token !== loadToken) return;
+                    model = gltf.scene;
+                    rememberOriginals(model);
+                    scene.add(model);
+                    // A bad saved configuration must not turn into a failed load
+                    try {
+                        applyConfig();
+                    } catch (e) {
+                        console.error('Model configuration not applied:', e);
+                        modelConfig = null;
+                        applyConfig();
+                    }
+                    loadState = 'ready';
+                    document.getElementById('loading').style.display = 'none';
+                },
+                function(progress) {
+                    if (token !== loadToken) return;
+                    if (progress.total > 0) {
+                        const percent = Math.round((progress.loaded / progress.total) * 100);
+                        document.getElementById('loading-text').textContent =
+                            localizedStrings.loadingProgress.replace('{0}', percent);
+                    }
+                },
+                function(error) {
+                    if (token !== loadToken) return;
+                    console.error('Error loading model from URI:', error);
+                    if (loadRetries < LOAD_RETRY_MS.length) {
+                        setTimeout(() => { if (token === loadToken) startModelLoad(url); }, LOAD_RETRY_MS[loadRetries++]);
+                        return;
+                    }
+                    loadState = 'error';
+                    document.getElementById('loading-text').textContent = localizedStrings.errorLoading;
+                }
+            );
+        }
+
+        // ---- Headlights: light beams ahead of the car while the head unit reports them on ----
+
+        let headlightsOn = false;
+        let beamLevel = 0;
+        let beams = null;           // { group, key }
+        let beamTextures = null;
+        // Lamps in the car frame, each { f: forward, l: towards the left, y: height } in scene units
+        let lamps = null;           // { L, R }
+        let lampsEdited = false;
+        let lampsRoadYaw = 0;
+        let draggingLamp = null;    // 'L' | 'R'
+        let lampHandles = null;
+
+        function setHeadlights(on) {
+            headlightsOn = !!on;
+        }
+
+        function gradientTexture(draw, w, h) {
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            draw(c.getContext('2d'), w, h);
+            return new THREE.CanvasTexture(c);
+        }
+
+        function makeBeamTextures() {
+            const radial = (ctx, w, h) => {
+                const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+                g.addColorStop(0, 'rgba(255,255,255,1)');
+                g.addColorStop(0.4, 'rgba(255,255,255,0.35)');
+                g.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = g;
+                ctx.fillRect(0, 0, w, h);
+            };
+            return {
+                glow: gradientTexture(radial, 64, 64),
+                pool: gradientTexture(radial, 128, 128)
+            };
+        }
+
+        // Light cone: brightest at the lamp, fading with distance and towards its silhouette, so it has no hard edges
+        function beamMaterial(base) {
+            const m = new THREE.ShaderMaterial({
+                uniforms: { color: { value: new THREE.Color(0xfff2d0) }, opacity: { value: 0 } },
+                vertexShader: `
+                    varying float vAlong;
+                    varying float vFacing;
+                    void main() {
+                        vAlong = uv.y;
+                        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+                        vFacing = abs(dot(normalize(normalMatrix * normal), normalize(-mv.xyz)));
+                        gl_Position = projectionMatrix * mv;
+                    }`,
+                fragmentShader: `
+                    uniform vec3 color;
+                    uniform float opacity;
+                    varying float vAlong;
+                    varying float vFacing;
+                    void main() {
+                        float a = opacity * pow(vAlong, 1.2) * pow(vFacing, 1.2);
+                        gl_FragColor = vec4(color * a, a);
+                    }`,
+                transparent: true,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+                blending: THREE.AdditiveBlending
+            });
+            m.userData.base = base;
+            return m;
+        }
+
+        // The model's outline in the car frame (forward / left axes)
+        function carExtents() {
+            const box = new THREE.Box3().setFromObject(model);
+            const frame = carFrame();
+            let front = -Infinity, back = Infinity, maxL = -Infinity, minL = Infinity;
+            for (const x of [box.min.x, box.max.x]) for (const z of [box.min.z, box.max.z]) {
+                const f = x * frame.fwd.x + z * frame.fwd.y, l = x * frame.left.x + z * frame.left.y;
+                front = Math.max(front, f); back = Math.min(back, f);
+                maxL = Math.max(maxL, l); minL = Math.min(minL, l);
+            }
+            return { box, front, length: front - back, width: maxL - minL, height: box.max.y - box.min.y, centre: (maxL + minL) / 2 };
+        }
+
+        // Suggested from the outline, in the proportions of the lamps placed by hand on the bundled model:
+        // 4.5% of the length behind the front, a third of the width out, 46% of the height up
+        function suggestLamps() {
+            const e = carExtents();
+            const lamp = side => ({ f: e.front - e.length * 0.045, l: e.centre + side * e.width * 0.333, y: e.box.min.y + e.height * 0.458 });
+            return { L: lamp(1), R: lamp(-1) };
+        }
+
+        function ensureLamps() {
+            if (lamps || !model) return;
+            editorResetLights();
+        }
+
+        function editorResetLights() {
+            if (!model) return;
+            lamps = suggestLamps();
+            lampsEdited = false;
+            lampsRoadYaw = roadPivot.rotation.y;
+        }
+
+        // Local frame of the beams group: +z ahead of the car, +x to its left
+        function lampPoint(id) {
+            const p = lamps[id];
+            return new THREE.Vector3(p.l, p.y, p.f);
+        }
+
+        function lampWorld(id) {
+            return lampPoint(id).applyAxisAngle(new THREE.Vector3(0, 1, 0), roadPivot.rotation.y);
+        }
+
+        function buildBeams() {
+            if (!beamTextures) beamTextures = makeBeamTextures();
+            ensureLamps();
+            const e = carExtents();
+            const reach = e.length * 1.2;
+            const group = new THREE.Group();
+            group.rotation.y = roadPivot.rotation.y;
+            const additive = (map, color, base) => {
+                const m = new THREE.MeshBasicMaterial({ map, color, transparent: true, opacity: 0, depthWrite: false,
+                    side: THREE.DoubleSide, blending: THREE.AdditiveBlending });
+                m.userData.base = base;
+                return m;
+            };
+            for (const [id, side] of [['L', 1], ['R', -1]]) {
+                const lamp = lampPoint(id);
+                const dir = new THREE.Vector3(side * 0.05, -0.12, 1).normalize();
+                const cone = new THREE.Mesh(new THREE.ConeGeometry(e.width * 0.32, reach, 40, 1, true), beamMaterial(1.0));
+                cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().negate());
+                cone.position.copy(lamp).addScaledVector(dir, reach / 2);
+                cone.renderOrder = 3;
+                group.add(cone);
+
+                const glowMat = new THREE.SpriteMaterial({ map: beamTextures.glow, color: 0xffffff, transparent: true,
+                    opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+                glowMat.userData.base = 0.8;
+                const glow = new THREE.Sprite(glowMat);
+                glow.position.copy(lamp);
+                glow.scale.setScalar(e.width * 0.12);
+                glow.renderOrder = 4;
+                group.add(glow);
+            }
+            const pool = new THREE.Mesh(new THREE.PlaneGeometry(e.width * 1.6, e.length * 1.1),
+                additive(beamTextures.pool, 0xfff2d0, 0.6));
+            pool.rotation.x = -Math.PI / 2;
+            pool.position.set((lamps.L.l + lamps.R.l) / 2, e.box.min.y + 0.005, Math.max(lamps.L.f, lamps.R.f) + e.length * 0.6);
+            pool.renderOrder = 2;
+            group.add(pool);
+            return group;
+        }
+
+        function resetBeams() {
+            if (!beams) return;
+            scene.remove(beams.group);
+            beams.group.traverse(o => {
+                if (o.geometry) o.geometry.dispose();
+                if (o.material) o.material.dispose();
+            });
+            beams = null;
+        }
+
+        function updateHeadlights() {
+            // The wizard's lights step always shows them, to place the lamps
+            const editingLamps = editMode === 'lights';
+            const want = !!model && loadState === 'ready' && (editingLamps || (headlightsOn && !editMode));
+            beamLevel += ((want ? 1 : 0) - beamLevel) * 0.08;
+            if (Math.abs(beamLevel - (want ? 1 : 0)) < 0.005) beamLevel = want ? 1 : 0;
+            updateLampHandles(editingLamps && loadState === 'ready');
+            if (beamLevel === 0) {
+                if (beams) beams.group.visible = false;
+                return;
+            }
+            ensureLamps();
+            const key = [model.uuid, roadPivot.rotation.y.toFixed(3), JSON.stringify(lamps)].join(':');
+            if (!beams || beams.key !== key) {
+                resetBeams();
+                beams = { group: buildBeams(), key };
+                scene.add(beams.group);
+            }
+            beams.group.visible = true;
+            // Additive light barely shows on the light background
+            const k = beamLevel * (isDarkTheme ? 1 : 0.7);
+            beams.group.traverse(o => {
+                if (!o.material) return;
+                const v = o.material.userData.base * k;
+                if (o.material.uniforms) o.material.uniforms.opacity.value = v;
+                else o.material.opacity = v;
+            });
+        }
+
+        // Wizard "Lights" step: one marker per lamp, each moved on its own
+        function updateLampHandles(show) {
+            if (!lampHandles) {
+                if (!show) return;
+                lampHandles = ['L', 'R'].map(id => {
+                    const hd = document.createElement('div');
+                    hd.style.cssText = 'position:absolute;transform:translate(-50%,-50%);width:64px;height:64px;display:none;align-items:center;justify-content:center;pointer-events:auto;touch-action:none;z-index:160';
+                    hd.innerHTML = '<div style="width:40px;height:40px;border-radius:50%;border:3px solid #ffd54f;background:rgba(255,213,79,.3);box-sizing:border-box"></div>';
+                    document.getElementById('container').appendChild(hd);
+                    hd.addEventListener('pointerdown', e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        draggingLamp = id;
+                        controls.enabled = false;
+                    });
+                    return { id, hd };
+                });
+            }
+            const rect = renderer.domElement.getBoundingClientRect();
+            for (const { id, hd } of lampHandles) {
+                hd.style.display = show && lamps ? 'flex' : 'none';
+                if (!show || !lamps) continue;
+                const p = lampWorld(id).project(camera);
+                hd.style.left = ((p.x + 1) / 2 * rect.width) + 'px';
+                hd.style.top = ((1 - p.y) / 2 * rect.height) + 'px';
+            }
+        }
+
+        // The marker sticks to the car's surface under the finger (a touch in front of it, so the bumper
+        // doesn't hide the beam); off the car it moves on the plane facing the camera
+        window.addEventListener('pointermove', ev => {
+            if (!draggingLamp || !lamps) return;
+            const rect = renderer.domElement.getBoundingClientRect();
+            const ndc = new THREE.Vector2(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+            dragRay.setFromCamera(ndc, camera);
+            const frame = carFrame();
+            const e = carExtents();
+            let hit = dragRay.intersectObject(model, true)[0];
+            let point = hit ? hit.point.clone() : null;
+            if (point) {
+                point.x += frame.fwd.x * e.length * 0.01;
+                point.z += frame.fwd.y * e.length * 0.01;
+            } else {
+                const normal = camera.getWorldDirection(new THREE.Vector3());
+                const current = lampWorld(draggingLamp);
+                point = new THREE.Vector3();
+                if (!dragRay.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(normal, current), point)) return;
+            }
+            lamps[draggingLamp] = {
+                f: point.x * frame.fwd.x + point.z * frame.fwd.y,
+                l: point.x * frame.left.x + point.z * frame.left.y,
+                y: Math.min(e.box.max.y, Math.max(e.box.min.y, point.y))
+            };
+            lampsEdited = true;
+        });
+
+        function endLampDrag() {
+            if (!draggingLamp) return;
+            draggingLamp = null;
+            controls.enabled = true;
+        }
+        window.addEventListener('pointerup', endLampDrag);
+        window.addEventListener('pointercancel', endLampDrag);
+
+        // In front of the car, slightly to the side and above, so both lamps can be reached
+        function lightsPose() {
+            return { az: roadPivot.rotation.y + 0.35, h: 0.9, d: 4.2 };
+        }
+
+        // ---- Tyre pressures on the wheels ----
+
+        const WHEEL_IDS = ['FL', 'FR', 'RL', 'RR'];
+        const WHEEL_NAME_RE = /wheel|tire|tyre|\brim|ruot|cerch|gomm|pneu|reifen/i;
+        const NOT_WHEEL_RE = /steer|volante|spare|scorta/i;
+        const LABEL_EDGE_MARGIN_PX = 8;
+        const LABEL_GAP_PX = 8;
+
+        let wheels = null;            // { FL: {x, y, z, r}, ... } in scene coordinates
+        let suggestedWheels = null;
+        let wheelsEdited = false;     // true once the user moved a marker (saved in the model config)
+        let wheelsRoadYaw = 0;        // driving direction the wheel corners were assigned with
+        let tireData = null;          // { FL: {pressure, temp, level} }, level 0 ok, 1 warning, 2 critical
+        let tireOverlay = null;
+        const tireLabels = {}, tireHandles = {}, tireRings = {}, tireLeaders = {};
+
+        function cloneWheels(w) {
+            return w ? JSON.parse(JSON.stringify(w)) : null;
+        }
+
+        // The driving direction comes from the road, which follows the driving view
+        function carFrame() {
+            const yaw = roadPivot.rotation.y;
+            const fwd = new THREE.Vector2(Math.sin(yaw), Math.cos(yaw));   // (x, z)
+            const left = new THREE.Vector2(fwd.y, -fwd.x);                  // driver's left when facing fwd
+            return { fwd, left };
+        }
+
+        function quadrantOf(x, z, frame) {
+            const f = x * frame.fwd.x + z * frame.fwd.y;
+            const l = x * frame.left.x + z * frame.left.y;
+            return (f >= 0 ? 'F' : 'R') + (l >= 0 ? 'L' : 'R');
+        }
+
+        function forEachWorldVertex(filter, fn) {
+            const v = new THREE.Vector3();
+            model.updateMatrixWorld(true);
+            model.traverse(o => {
+                if (!o.isMesh || !o.geometry.attributes.position || !filter(o)) return;
+                const pos = o.geometry.attributes.position;
+                for (let i = 0; i < pos.count; i++) fn(v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld));
+            });
+        }
+
+        function meshNames(o) {
+            return [o.name, o.parent && o.parent.name].concat([].concat(o.material).map(m => m && m.name)).join(' ');
+        }
+
+        // 1. Parts named like wheels/tyres: split their vertices into the four corners
+        function wheelsFromNames(box, frame) {
+            const lowLimit = box.min.y + (box.max.y - box.min.y) * 0.55;
+            const boxes = {};
+            forEachWorldVertex(o => { const n = meshNames(o); return WHEEL_NAME_RE.test(n) && !NOT_WHEEL_RE.test(n); }, p => {
+                if (p.y > lowLimit) return;
+                const q = quadrantOf(p.x, p.z, frame);
+                (boxes[q] = boxes[q] || new THREE.Box3()).expandByPoint(p);
+            });
+            const out = {};
+            for (const id of WHEEL_IDS) {
+                const b = boxes[id];
+                if (!b) continue;
+                const c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
+                out[id] = { x: c.x, y: c.y, z: c.z, r: s.y / 2 };
+            }
+            return out;
+        }
+
+        // 2. Tyres are the only parts touching the ground: centroid of the lowest vertices in each corner
+        function wheelsFromContacts(box, frame) {
+            const h = box.max.y - box.min.y;
+            const limit = box.min.y + h * 0.03;
+            const acc = {};
+            forEachWorldVertex(() => true, p => {
+                if (p.y > limit) return;
+                const q = quadrantOf(p.x, p.z, frame);
+                const a = acc[q] = acc[q] || { x: 0, z: 0, n: 0 };
+                a.x += p.x; a.z += p.z; a.n++;
+            });
+            const r = h * 0.21;
+            const out = {};
+            for (const id of WHEEL_IDS) {
+                const a = acc[id];
+                if (!a || a.n < 3) continue;
+                out[id] = { x: a.x / a.n, y: box.min.y + r, z: a.z / a.n, r };
+            }
+            return out;
+        }
+
+        // 3. Typical car proportions within the bounding box
+        function wheelsFromProportions(box, frame) {
+            const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
+            const longX = Math.abs(frame.fwd.x) > 0.5;
+            const length = longX ? size.x : size.z, width = longX ? size.z : size.x;
+            const r = size.y * 0.21;
+            const out = {};
+            for (const id of WHEEL_IDS) {
+                const f = (id[0] === 'F' ? 1 : -1) * length * 0.32;
+                const l = (id[1] === 'L' ? 1 : -1) * width * 0.42;
+                out[id] = {
+                    x: center.x + frame.fwd.x * f + frame.left.x * l,
+                    y: box.min.y + r,
+                    z: center.z + frame.fwd.y * f + frame.left.y * l,
+                    r
+                };
+            }
+            return out;
+        }
+
+        function suggestWheels() {
+            const box = new THREE.Box3().setFromObject(model);
+            const frame = carFrame();
+            const byName = wheelsFromNames(box, frame);
+            const byContact = wheelsFromContacts(box, frame);
+            const byProportion = wheelsFromProportions(box, frame);
+            const out = {};
+            for (const id of WHEEL_IDS) out[id] = { ...(byName[id] || byContact[id] || byProportion[id]) };
+            return out;
+        }
+
+        // list: [{ id: 'FL'|'FR'|'RL'|'RR', pressure, temp, level, raw }] or null to hide everything.
+        // A sensor that stopped transmitting comes as { id, silent: true, level: 1 } and shows an icon.
+        function setTireData(list) {
+            if (!list) { tireData = null; return; }
+            tireData = {};
+            list.forEach(t => { if (WHEEL_IDS.includes(t.id)) tireData[t.id] = t; });
+        }
+
+        // Labels appear while the user touches the car and for a while after (all tyres, or only those with a
+        // problem); on their own only for a tyre with a new problem, flagged by Android, even while driving.
+        const TIRE_SHOW_MS = 15000;
+        let tireProblemsOnly = false;
+        let tireShowUntil = 0;
+        const tireFlashUntil = {};
+        let pendingFlash = [];
+
+        function setTireOptions(problemsOnly) {
+            tireProblemsOnly = !!problemsOnly;
+        }
+
+        function showTires() {
+            tireShowUntil = performance.now() + TIRE_SHOW_MS;
+        }
+
+        // Started once the tyre's data has arrived and the model is ready
+        function flashTires(ids) {
+            pendingFlash = pendingFlash.concat((ids || []).filter(id => WHEEL_IDS.includes(id)));
+        }
+
+        function tireVisible(id, level) {
+            const now = performance.now();
+            if ((tireFlashUntil[id] || 0) > now) return true;
+            if (isThirdPersonView || (tireProblemsOnly && !level)) return false;
+            return userTouching || now < tireShowUntil;
+        }
+
+        function levelColor(level) {
+            return level === 2 ? '#ef5350' : level === 1 ? '#ffa726' : null;
+        }
+
+        function buildTireOverlay() {
+            tireOverlay = document.createElement('div');
+            tireOverlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:150;overflow:hidden;font-family:\'Segoe UI\',system-ui,-apple-system,sans-serif';
+            document.getElementById('container').appendChild(tireOverlay);
+            for (const id of WHEEL_IDS) {
+                // Leader lines live in the scene so the body hides the stretch behind it
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3));
+                geometry.setIndex([0, 1, 2, 2, 1, 3]);
+                const leader = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+                leader.frustumCulled = false;
+                leader.visible = false;
+                leader.renderOrder = 2;
+                // Small dot where the line meets the wheel; a child, so it hides with the line
+                const dot = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8),
+                    new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+                dot.renderOrder = 2;
+                leader.add(dot);
+                leader.userData.dot = dot;
+                scene.add(leader);
+                tireLeaders[id] = leader;
+
+                const lab = document.createElement('div');
+                lab.style.cssText = 'position:absolute;transform:translate(-50%,-50%);text-align:center;line-height:1.15;white-space:nowrap;display:none';
+                tireOverlay.appendChild(lab);
+                tireLabels[id] = lab;
+
+                // Wizard marker: 48dp circle inside a 64dp touch target
+                const hd = document.createElement('div');
+                hd.style.cssText = 'position:absolute;transform:translate(-50%,-50%);width:64px;height:64px;display:none;align-items:center;justify-content:center;pointer-events:auto;touch-action:none';
+                hd.innerHTML = '<div style="width:48px;height:48px;border-radius:50%;border:3px solid #4da3ff;background:rgba(77,163,255,.3);color:#fff;font:bold 16px sans-serif;display:flex;align-items:center;justify-content:center;box-sizing:border-box;text-shadow:0 0 3px #000"></div>';
+                tireOverlay.appendChild(hd);
+                tireHandles[id] = hd;
+                hd.addEventListener('pointerdown', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    draggingWheel = id;
+                    controls.enabled = false;
+                });
+
+                const ring = new THREE.Mesh(
+                    new THREE.RingGeometry(0.42, 0.52, 40),
+                    new THREE.MeshBasicMaterial({ color: 0xef5350, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })
+                );
+                ring.rotation.x = -Math.PI / 2;
+                ring.visible = false;
+                scene.add(ring);
+                tireRings[id] = ring;
+            }
+        }
+
+        function projectToScreen(x, y, z, rect) {
+            const p = new THREE.Vector3(x, y, z).project(camera);
+            return { x: (p.x + 1) / 2 * rect.width, y: (1 - p.y) / 2 * rect.height };
+        }
+
+        const LEADER_WIDTH_PX = 1.5;
+        const LEADER_DOT_PX = 3.5;
+
+        // Thin ribbon from the outer face of the wheel to a screen point (the label edge), placed at the
+        // wheel's depth: drawn with depth test, the stretch passing behind the car body disappears
+        function setLeader(leader, id, toX, toY, rect, color, opacity) {
+            const w = wheels[id], frame = carFrame();
+            const out = (id[1] === 'L' ? 1 : -1) * w.r * 0.4;
+            const from = new THREE.Vector3(w.x + frame.left.x * out, w.y, w.z + frame.left.y * out);
+            const ndcZ = from.clone().project(camera).z;
+            const to = new THREE.Vector3(toX / rect.width * 2 - 1, -(toY / rect.height) * 2 + 1, ndcZ).unproject(camera);
+            const worldPerPx = 2 * from.distanceTo(camera.position) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / rect.height;
+            const side = to.clone().sub(from).cross(camera.position.clone().sub(from)).normalize()
+                .multiplyScalar(worldPerPx * LEADER_WIDTH_PX / 2);
+            const pos = leader.geometry.attributes.position;
+            pos.setXYZ(0, from.x + side.x, from.y + side.y, from.z + side.z);
+            pos.setXYZ(1, from.x - side.x, from.y - side.y, from.z - side.z);
+            pos.setXYZ(2, to.x + side.x, to.y + side.y, to.z + side.z);
+            pos.setXYZ(3, to.x - side.x, to.y - side.y, to.z - side.z);
+            pos.needsUpdate = true;
+            leader.material.color.set(color);
+            leader.material.opacity = opacity;
+            const dot = leader.userData.dot;
+            dot.position.copy(from);
+            dot.scale.setScalar(worldPerPx * LEADER_DOT_PX);
+            dot.material.color.set(color);
+            dot.material.opacity = opacity;
+            leader.visible = true;
+        }
+
+        // Horizontal extent of the model on screen
+        function modelScreenBox(rect) {
+            const b = new THREE.Box3().setFromObject(model);
+            let minX = Infinity, maxX = -Infinity;
+            for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) {
+                const p = projectToScreen(x, y, z, rect);
+                minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+            }
+            return { minX, maxX };
+        }
+
+        // Keeps labels on one side from overlapping, inside [top, bottom]
+        function spreadVertically(items, top, bottom) {
+            items.sort((a, b) => a.y - b.y);
+            for (let i = 0; i < items.length; i++) {
+                const prev = items[i - 1];
+                const min = prev ? prev.y + prev.h / 2 + LABEL_GAP_PX + items[i].h / 2 : top + items[i].h / 2;
+                items[i].y = Math.max(items[i].y, min);
+            }
+            for (let i = items.length - 1; i >= 0; i--) {
+                const next = items[i + 1];
+                const max = next ? next.y - next.h / 2 - LABEL_GAP_PX - items[i].h / 2 : bottom - items[i].h / 2;
+                items[i].y = Math.min(items[i].y, max);
+            }
+        }
+
+        function updateTireOverlay() {
+            if (!tireOverlay) buildTireOverlay();
+            if (model && loadState === 'ready' && (editMode === 'wheels' || (!editMode && tireData))) ensureWheels();
+            const ready = model && wheels && loadState === 'ready';
+            const editing = ready && editMode === 'wheels';
+            const live = ready && !editMode && tireData;
+            if (live && pendingFlash.length) {
+                const until = performance.now() + TIRE_SHOW_MS;
+                pendingFlash = pendingFlash.filter(id => {
+                    if (!tireData[id]) return true;
+                    tireFlashUntil[id] = until;
+                    return false;
+                });
+            }
+            const t = performance.now() / 1000;
+            const rect = renderer.domElement.getBoundingClientRect();
+            const centres = {};
+            if (ready) for (const id of WHEEL_IDS) centres[id] = projectToScreen(wheels[id].x, wheels[id].y, wheels[id].z, rect);
+            const placed = { left: [], right: [] };
+            const byX = ready ? [...WHEEL_IDS].sort((a, b) => centres[a].x - centres[b].x) : [];
+
+            for (const id of WHEEL_IDS) {
+                const d = live ? tireData[id] : null;
+                const level = d ? d.level : 0;
+                const color = levelColor(level);
+
+                // Ground ring only in the setup wizard, to place the wheels
+                const ring = tireRings[id];
+                ring.visible = !!editing;
+                if (ring.visible) {
+                    const w = wheels[id];
+                    ring.position.set(w.x, MODEL_FLOOR + 0.01, w.z);
+                    ring.scale.setScalar(Math.max(0.6, w.r / 0.35));
+                    ring.material.color.set('#4da3ff');
+                    ring.material.opacity = 0.5;
+                }
+
+                const hd = tireHandles[id];
+                hd.style.display = editing ? 'flex' : 'none';
+                if (editing) {
+                    hd.style.left = centres[id].x + 'px';
+                    hd.style.top = centres[id].y + 'px';
+                    hd.firstChild.textContent = (localizedStrings.wheelShort || {})[id] || id;
+                }
+
+                const lab = tireLabels[id];
+                const want = !!(d && tireVisible(id, level));
+                lab._a = (lab._a || 0) + ((want ? 1 : 0) - (lab._a || 0)) * 0.12;
+                if (Math.abs(lab._a - (want ? 1 : 0)) < 0.01) lab._a = want ? 1 : 0;
+                const show = !!d && lab._a > 0;
+                lab.style.display = show ? 'block' : 'none';
+                lab.style.opacity = lab._a;
+                tireLeaders[id].visible = false;
+                if (!show) continue;
+                const base = isDarkTheme ? '#ffffff' : '#2c2c2c';
+                const halo = isDarkTheme ? '#242424' : '#f0f0f0';
+                // Value from a while ago (the age is in the vehicle panel): greyed
+                const tone = color || (d.stale ? (isDarkTheme ? '#8a8a8a' : '#8c8c8c') : base);
+                const html = d.silent
+                    ? `<div style="line-height:0">${BATTERY_ERROR_SVG.replace('COLOR', color || base)}</div>`
+                    : `<div style="font-size:20px;font-weight:${level ? 600 : 300};color:${tone}">${escapeHtml(d.pressure)}</div>` +
+                      `<div style="font-size:16px;opacity:.75;color:${tone}">${escapeHtml(d.temp)}</div>`;
+                if (lab.innerHTML !== html) lab.innerHTML = html;
+                lab.style.textShadow = `0 0 4px ${halo}, 0 0 8px ${halo}`;
+                const side = byX.indexOf(id) < 2 ? 'left' : 'right';
+                placed[side].push({ id, y: centres[id].y, w: lab.offsetWidth, h: lab.offsetHeight, color: tone, level, alpha: lab._a });
+            }
+            if (!placed.left.length && !placed.right.length) return;
+
+            // Labels beside the car, clear of the speed bar, with a thin line to their wheel
+            const bar = document.getElementById('bottomBar').getBoundingClientRect();
+            const sbox = modelScreenBox(rect);
+            const gap = Math.min(80, Math.max(28, Math.min(rect.width, rect.height) * 0.1));
+            const top = LABEL_EDGE_MARGIN_PX + topInsetPx;
+            const bottom = Math.min(rect.height, bar.top - rect.top) - LABEL_EDGE_MARGIN_PX;
+            for (const side of ['left', 'right']) {
+                spreadVertically(placed[side], top, bottom);
+                for (const it of placed[side]) {
+                    const lab = tireLabels[it.id];
+                    const hw = it.w / 2;
+                    let lx = side === 'left' ? sbox.minX - gap - hw : sbox.maxX + gap + hw;
+                    lx = Math.min(rect.width - hw - LABEL_EDGE_MARGIN_PX, Math.max(hw + LABEL_EDGE_MARGIN_PX, lx));
+                    lab.style.left = lx + 'px';
+                    lab.style.top = it.y + 'px';
+                    const edgeX = side === 'left' ? lx + hw + 4 : lx - hw - 4;
+                    setLeader(tireLeaders[it.id], it.id, edgeX, it.y, rect, it.color, (it.level ? 0.9 : 0.45) * it.alpha);
+                }
+            }
+        }
+
+        function escapeHtml(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        // Material "battery error" (outline): the sensor stopped transmitting
+        const BATTERY_ERROR_SVG = '<svg width="36" height="36" viewBox="0 0 960 960" fill="COLOR"><path d="M320,880Q303,880 291.5,868.5Q280,857 280,840L280,200Q280,183 291.5,171.5Q303,160 320,160L400,160L400,80L560,80L560,160L640,160Q657,160 668.5,171.5Q680,183 680,200L680,508Q658,514 638,523.5Q618,533 600,546L600,240L360,240L360,800L508,800Q513,822 522.5,842Q532,862 545,880L320,880ZM656,880L600,824L684,740L600,656L656,600L740,684L824,600L880,656L797,740L880,824L824,880L740,797L656,880Z"/></svg>';
+
+        // Space at the top covered by Android overlays (e.g. the maneuver), kept free of labels
+        let topInsetPx = 0;
+        function setTopInset(px) {
+            topInsetPx = Math.max(0, px || 0);
+        }
+
+        // Wizard "Wheels" step: drag a marker onto its wheel
+        let draggingWheel = null;
+        const dragRay = new THREE.Raycaster();
+
+        window.addEventListener('pointermove', ev => {
+            if (!draggingWheel || !wheels) return;
+            const rect = renderer.domElement.getBoundingClientRect();
+            const ndc = new THREE.Vector2(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+            dragRay.setFromCamera(ndc, camera);
+            const w = wheels[draggingWheel];
+            const hit = new THREE.Vector3();
+            if (dragRay.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -w.y), hit)) {
+                w.x = hit.x;
+                w.z = hit.z;
+                wheelsEdited = true;
+            }
+        });
+
+        function endWheelDrag() {
+            if (!draggingWheel) return;
+            draggingWheel = null;
+            controls.enabled = true;
+        }
+        window.addEventListener('pointerup', endWheelDrag);
+        window.addEventListener('pointercancel', endWheelDrag);
+
+        // Seen from above the four wheels never overlap, so every marker is easy to grab
+        function wheelsPose() {
+            return { az: roadPivot.rotation.y + Math.PI, h: 5.5, d: 1.6 };
+        }
+
+        function ensureWheels() {
+            if (wheels || !model) return;
+            editorResetWheels();
+        }
+
+        function editorResetWheels() {
+            if (!model) return;
+            suggestedWheels = suggestWheels();
+            wheels = cloneWheels(suggestedWheels);
+            wheelsEdited = false;
+            wheelsRoadYaw = roadPivot.rotation.y;
+        }
+
+        // ---- Setup wizard API (Android polls editorState and reads editorGetConfig) ----
+
+        function captureEditedPose() {
+            if (editMode === 'park') parkPose = currentCameraPose();
+            if (editMode === 'drive') {
+                drivePose = currentCameraPose();
+                roadPivot.rotation.y = snapRoadYaw(drivePose.az);
+            }
+        }
+
+        function editorSetStep(step) {
+            if (model) captureEditedPose();
+            editMode = step;
+            if (!model) return;
+            if (step === 'park') setCameraPose(parkPose);
+            if (step === 'drive') setCameraPose(drivePose);
+            if (step === 'wheels') {
+                // A new driving direction changes which corner is which: start again from the suggestions
+                if (Math.abs(wheelsRoadYaw - roadPivot.rotation.y) > 1e-3) editorResetWheels();
+                else ensureWheels();
+                setCameraPose(wheelsPose());
+            }
+            if (step === 'lights') {
+                if (Math.abs(lampsRoadYaw - roadPivot.rotation.y) > 1e-3) editorResetLights();
+                else ensureLamps();
+                setCameraPose(lightsPose());
+            }
+        }
+
+        function editorTick() {
+            const showRoad = editMode === 'drive';
+            if (showRoad) {
+                roadPivot.rotation.y = snapRoadYaw(currentCameraPose().az);
+                roadOffset -= 0.06;
+                roadTexture.offset.y = roadOffset;
+                bendRoad();
+            }
+            roadCurrentOpacity = showRoad ? 0.8 : 0;
+            roadMesh.material.opacity = roadCurrentOpacity;
+            roadMesh.visible = showRoad;
+        }
+
+        function editorResetPose(kind) {
+            if (kind === 'park') parkPose = { ...DEFAULT_PARK };
+            else drivePose = { ...DEFAULT_DRIVE };
+            if (model && editMode === kind) setCameraPose(kind === 'park' ? parkPose : drivePose);
+        }
+
+        function editorSetColor(key, hex) {
+            if (hex) colorOverrides[key] = hex;
+            else delete colorOverrides[key];
+            if (model) applyColors();
+        }
+
+        // Briefly glows the parts painted with the given original colour
+        function editorHighlight(key) {
+            if (!model) return;
+            const mats = [];
+            forEachMaterial(model, m => {
+                if (m.emissive && m.userData.orig && m.userData.orig.key === key) mats.push(m);
+            });
+            const start = performance.now();
+            (function step() {
+                const k = Math.max(0, 1 - (performance.now() - start) / 900);
+                const v = Math.abs(Math.sin(k * Math.PI * 3)) * k;
+                mats.forEach(m => {
+                    m.emissive.setHex(m.userData.orig.emissive);
+                    m.emissive.r += 0.3 * v;
+                    m.emissive.g += 0.6 * v;
+                    m.emissive.b += v;
+                });
+                if (k > 0) requestAnimationFrame(step);
+            })();
+        }
+
+        function editorState() {
+            return JSON.stringify({
+                status: loadState,
+                colors: model && loadState === 'ready' ? colorGroups() : []
+            });
+        }
+
+        function editorGetConfig() {
+            if (!model) return null;
+            captureEditedPose();
+            return JSON.stringify({
+                yaw: model.userData.yaw,
+                colors: colorOverrides,
+                park: parkPose,
+                drive: drivePose,
+                roadYaw: roadPivot.rotation.y,
+                wheels: wheelsEdited ? wheels : undefined,
+                lights: lampsEdited && lamps ? { ...lamps, yaw: roadPivot.rotation.y } : undefined
+            });
+        }
+
+        // Initialize when page loads
+        window.addEventListener('load', () => {
+            init();
+        });
+    </script>
+    <script src="src/osm-match.js"></script>
+    <script src="src/osm-online.js"></script>
+    <script src="src/osm-terrain.js"></script>
+    <script src="src/osm-buildings.js"></script>
+    <script src="src/osm-world.js"></script>
+    <script src="src/osm-sim.js"></script>
+    <script src="src/osm-engine.js"></script>
+    <script src="src/osm-game.js"></script>
+</body>
+</html>
