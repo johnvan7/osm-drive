@@ -55,7 +55,7 @@
         if (delta > 0) batch.total += delta;
         const done = batch.total - batch.pending;
         batch.el.style.display = batch.pending > 0 && !T.quiet ? 'block' : 'none';
-        batch.el.querySelector('.t').textContent = `Carico l'altitudine: ${done} di ${batch.total} riquadri`;
+        batch.el.querySelector('.t').textContent = I18n.t('loadingElevation', done, batch.total);
         batch.el.querySelector('.b').style.width = (batch.total ? 100 * done / batch.total : 0) + '%';
         if (batch.pending === 0) batch.total = 0;
     }

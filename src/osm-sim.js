@@ -53,7 +53,8 @@
         const box = document.createElement('div');
         box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1000;background:rgba(0,0,0,.8);color:#fff;'
             + 'padding:14px 18px;border-radius:12px;font:14px sans-serif;width:300px';
-        box.innerHTML = '<div class="t">Preparo la guida…</div><div style="height:6px;margin-top:10px;background:rgba(255,255,255,.2);border-radius:3px">'
+        box.innerHTML = `<div class="t">${I18n.t('preparing')}</div>`
+            + '<div style="height:6px;margin-top:10px;background:rgba(255,255,255,.2);border-radius:3px">'
             + '<div class="b" style="height:100%;width:0;background:#3e8bff;border-radius:3px"></div></div>';
         document.body.appendChild(box);
         const buttons = document.querySelectorAll('[data-sim-start]');
@@ -61,7 +62,7 @@
         if (window.Terrain) Terrain.quiet = true;
         let done = 0;
         const show = () => {
-            box.querySelector('.t').textContent = `Preparo la guida: ${done} di ${list.length} (strade, altitudine, modello 3D)`;
+            box.querySelector('.t').textContent = I18n.t('preparingN', done, list.length);
             box.querySelector('.b').style.width = 100 * done / list.length + '%';
         };
         show();

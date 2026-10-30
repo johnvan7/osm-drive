@@ -1,67 +1,65 @@
 # AGENTS.md
 
-Guida per chi lavora sul codice (persone e agenti AI).
+Notes for anyone working on the code, people and AI agents alike.
 
-## Il progetto
+## The project
 
-**OSM Drive** è un gioco di guida nel browser su strade reali, costruite al volo da dati aperti: tile vettoriali OpenFreeMap, Overpass, Terrain Tiles e Photon (fonti e licenze nel [README](README.md)).
+**OSM Drive** is a browser driving game on real roads, built on the fly from open data: OpenFreeMap vector tiles, Overpass, Terrain Tiles and Photon (sources and licences in the [README](README.md)).
 
-- **Niente build né dipendenze:** JavaScript puro e three.js r128 in `js/`. Si serve con `python3 serve.py`.
-- **Origine:** il gioco è nato dal simulatore di prova di Diamond 3D Launcher (`../modern-3d-launcher`).
-  - `index.html` è una copia di `app/src/main/assets/3d_viewer.html` di quel progetto: le funzioni globali (`setMapScene`, `updateMap`, `setSpeedCamera`, …) sono le stesse.
-  - Gli script in `src/` le estendono o le sostituiscono dall'esterno.
-  - Le modifiche alla vista del launcher non arrivano qui da sole.
+- **No build, no dependencies:** plain JavaScript and three.js r128 in `js/`. Serve it with `python3 serve.py`; it is published as a static site on GitHub Pages.
+- **`index.html`** holds the 3D view and its global functions (`setMapScene`, `updateMap`, `setUpcomingTurn`, …). The scripts in `src/` extend or replace them from outside.
 
-## Struttura
+## Structure
 
-Gli script si caricano in quest'ordine (fondo di `index.html`), ognuno espone un oggetto globale:
+Scripts load in this order (bottom of `index.html`); each exposes one global:
 
-| File | Globale | Ruolo |
+| File | Global | Role |
 |---|---|---|
-| `src/osm-match.js` | `OsmMatch` | grafo stradale, unione dei nodi tra tile, aggancio alla strada, percorsi |
-| `src/osm-online.js` | `OsmOnline` | decodifica MVT (protobuf scritto a mano), conversione nel formato tile del launcher, Overpass (caselli, semafori, strisce, passaggi a livello, corsie) con rotazione dei server |
-| `src/osm-terrain.js` | `Terrain` | altitudine Terrarium z13 lisciata, terreno, asfalto sopra il terreno, guardrail, cielo e nebbia |
-| `src/osm-buildings.js` | `Buildings` | edifici estrusi, impronte per le collisioni, caselli |
-| `src/osm-world.js` | `World` | uso del suolo, acqua, ferrovie, distributori, lampioni, alberi |
-| `src/osm-sim.js` | `osmSim` | guida libera: fisica, cambio, collisioni, torna sulla strada. Con `?debug`, strumenti per l'aggancio alla strada |
-| `src/osm-engine.js` | `Engine` | suono sintetizzato di motore, vento, gomme, pioggia |
-| `src/osm-game.js` | — | interfaccia: mappa grande e minimappa, ricerca, navigazione, cielo e meteo, comandi touch |
+| `src/osm-i18n.js` | `I18n` | language (`?lang=`, saved choice, browser language, else English), texts in it/en/es/fr, place names in the chosen language |
+| `src/osm-match.js` | `OsmMatch` | road graph, joining nodes across tiles, road matching, routing |
+| `src/osm-online.js` | `OsmOnline` | MVT decoding (hand-written protobuf), conversion to the matcher's tile format, Overpass (toll booths, signals, crossings, level crossings, lanes) with server rotation |
+| `src/osm-terrain.js` | `Terrain` | smoothed Terrarium z13 elevation, ground, asphalt on the ground, guardrails, sky and fog |
+| `src/osm-buildings.js` | `Buildings` | extruded buildings, footprints for collisions, toll plazas |
+| `src/osm-world.js` | `World` | land cover, water, railways, fuel stations, street lights, trees |
+| `src/osm-sim.js` | `osmSim` | free driving: physics, gearbox, collisions, back to the road. With `?debug`, road-matching tools |
+| `src/osm-engine.js` | `Engine` | synthesised engine, wind, tyre and rain sound |
+| `src/osm-game.js` | — | interface: big map and minimap, search, navigation, sky and weather, settings, touch controls |
 
-- **`dev/`:** prove di stile per gli avvisi autovelox; non sono caricate.
-- **`tools/traces.py`:** prepara in `data/traces/` le tracce GPS per i test in `?debug`.
-- **`data/`:** è fuori da git.
+- **`dev/`:** old style experiments, not loaded.
+- **`tools/traces.py`:** prepares GPS traces in `data/traces/` for `?debug`.
+- **`data/`:** local only, not in git.
 
-## Coordinate
+## Coordinates
 
-- **Proiezione:** `OsmMatch.project(lat, lon)` è una proiezione metrica equirettangolare centrata sul primo punto: x verso est, y verso nord, in metri.
-- **Scena three.js:** `(-x*u, y0 + h*u, y*u)` con `u = 1/METERS_PER_UNIT` (1,2 m per unità) e `y0` = altezza della strada nella vista.
-- **Oggetti della mappa:** vanno in `map.inner`.
-- **Allontanamento:** oltre 30 km dall'origine il mondo si azzera e riparte attorno all'auto (`osmSim.recenter`).
+- **Projection:** `OsmMatch.project(lat, lon)` is an equirectangular metric projection centred on the first point loaded: x east, y north, in metres.
+- **three.js scene:** `(-x*u, y0 + h*u, y*u)` with `u = 1/METERS_PER_UNIT` (1.2 m per unit) and `y0` the road height in the view.
+- **Map objects** go in `map.inner`.
+- **Far away:** beyond 30 km from the origin the world resets around the car (`osmSim.recenter`).
 
-## Provare
+## Trying it out
 
 ```sh
 python3 serve.py                      # http://127.0.0.1:8765/
-python3 serve.py . 0.0.0.0 8765       # da telefono sulla rete locale
+python3 serve.py . 0.0.0.0 8765       # from a phone on the local network
 for f in src/*.js; do node --check "$f"; done
 ```
 
-- **Senza test automatici:** si prova nel browser, anche con una vista da telefono (`?touch` o user agent mobile, per esempio 844×390).
-- **Overpass a volte non risponde:** senza Overpass mancano caselli, semafori, strisce, passaggi a livello e corsie; il resto funziona.
-- **Errori:** si controlla la console.
+- **No automated tests:** try it in the browser, also in a phone view (`?touch` or a mobile user agent, e.g. 844×390), and check the console.
+- **Overpass is sometimes down:** without it toll booths, signals, crossings, level crossings and lane counts are missing; everything else works.
 
-## Convenzioni
+## Conventions
 
-- **Testi dell'interfaccia** in italiano; **commenti** in inglese, brevi, solo il perché.
-- **Rete:**
-  - una richiesta alla volta per servizio, con attesa e rotazione quando un server rifiuta;
-  - non aumentare raggi o frequenze senza motivo, perché sono servizi pubblici gratuiti;
-  - ogni dato scaricato va messo in cache per tile o cella.
-- **Prestazioni:**
-  - deve girare su un telefono;
-  - geometrie unite per tile e istanze per gli oggetti ripetuti;
-  - il dettaglio si disegna solo qualche centinaio di metri attorno all'auto;
-  - la scena attorno all'auto (terreno, asfalto, linee) è in coordinate della mappa: in guida libera si ricostruisce solo quando l'auto si è spostata di qualche decina di metri o arrivano dati nuovi (`freeScene` in `osm-sim.js`), non a ogni fix.
-- **Attribuzione:** ogni nuova fonte di dati va aggiunta alla riga di attribuzione in gioco e alla tabella del README.
-- **Dati salvati:** solo in `localStorage`, niente server propri.
-- **Commit:** solo quando richiesto.
+- **Interface texts:** never hard-coded; they go in `src/osm-i18n.js` in all four languages (it, en, es, fr) and are used through `I18n.t('key')`. The `?debug` tools are the exception, in Italian.
+- **Comments** in English, short, only the why.
+- **Network:**
+  - one request at a time per service, with waits and rotation when a server refuses;
+  - don't raise radii or frequencies without a reason: these are free public services;
+  - cache everything downloaded, per tile or cell.
+- **Performance:**
+  - it must run on a phone;
+  - geometry merged per tile, instancing for repeated objects;
+  - detail only a few hundred metres around the car;
+  - the scene around the car (ground, asphalt, lines) is in map coordinates: in free driving it is rebuilt only when the car has moved a few tens of metres or new data arrive (`freeScene` in `osm-sim.js`), not at every fix.
+- **Attribution:** every new data source or asset goes in the in-game credits (`credits` in `osm-i18n.js`) and in the README.
+- **Saved data:** `localStorage` only, no servers of our own.
+- **Commits:** only when asked.

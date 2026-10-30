@@ -189,7 +189,7 @@ const OsmOnline = (() => {
                 const mx = (mid[0] + m0[0]) / 2, my = (mid[1] + m0[1]) / 2;
                 const named = nameAt(mx, my, p.class) || {};
                 const t = { highway: p.ramp ? cls + '_link' : cls };
-                if (named.name) t.name = named.name;
+                if (named.name) t.name = I18n.name(named);
                 if (named.ref) t.ref = named.ref;
                 if (p.oneway === 1) t.oneway = 'yes';
                 else if (p.oneway === -1) t.oneway = '-1';

@@ -2,10 +2,12 @@
 // back-to-road button, day/night/auto and engine sound
 (() => {
     const RAD = Math.PI / 180;
-    const START = { lat: 41.2709, lon: 14.9201 };
+    // Where the map opens: Rome
+    const START = { lat: 41.9028, lon: 12.4964 };
     const CARD = 'background:rgba(14,18,24,.88);color:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.45);font:14px system-ui,sans-serif';
     const BTN = 'border:0;border-radius:10px;font:600 14px system-ui,sans-serif;cursor:pointer;padding:10px 16px;color:#fff';
-    const CREDITS = '\u00a9 OpenStreetMap contributors \u00b7 \u00a9 OpenMapTiles \u00b7 OpenFreeMap \u00b7 Ricerca: Photon \u00b7 Altitudine: Terrain Tiles (AWS)';
+    const tr = I18n.t;
+    const CREDITS = '\u00a9 OpenStreetMap contributors \u00b7 \u00a9 OpenMapTiles \u00b7 OpenFreeMap \u00b7 ' + tr('credits');
 
     // Road look shared by the map and the minimap: OpenMapTiles class -> colour, width in px at zoom 14
     const ROAD = {
@@ -32,7 +34,7 @@
 
     // ================= Full map =================
     const TILE_PX = 512;
-    const big = { open: false, cx: 0, cy: 0, zoom: 14, spawn: null, drag: null, dirty: true };
+    const big = { open: false, cx: 0, cy: 0, zoom: 12, spawn: null, drag: null, dirty: true };
     const disp = new Map();
 
     function displayTile(z, x, y) {
@@ -52,6 +54,22 @@
         return t;
     }
 
+    // Language menu; choosing reloads the page in the new language
+    function languagePicker(css) {
+        const row = el('label', 'display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;opacity:.9;' + css);
+        const sel = el('select', 'background:#1b2028;color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:5px 6px;font:13px system-ui,sans-serif;cursor:pointer');
+        for (const [code, label] of Object.entries(I18n.langs)) {
+            const o = el('option', '', label);
+            o.value = code;
+            o.selected = code === I18n.lang;
+            sel.appendChild(o);
+        }
+        sel.addEventListener('keydown', e => e.stopPropagation());
+        sel.onchange = () => I18n.set(sel.value);
+        row.append(el('span', '', tr('language')), sel);
+        return row;
+    }
+
     function buildBig() {
         big.box = el('div', 'position:fixed;inset:0;z-index:2000;background:#1b2028;display:none;cursor:grab;user-select:none');
         big.canvas = el('canvas', 'position:absolute;inset:0;width:100%;height:100%');
@@ -59,14 +77,15 @@
 
         // Search, my position
         const side = el('div', CARD + ';position:absolute;left:20px;top:20px;width:min(360px, calc(100% - 100px));box-sizing:border-box;padding:14px');
-        side.innerHTML = '<div style="font-size:18px;font-weight:700;margin-bottom:10px">Da dove parti?</div>';
+        side.innerHTML = `<div style="font-size:18px;font-weight:700;margin-bottom:10px">${tr('whereFrom')}</div>`;
+        // 16 px: on smaller text iPhones zoom the whole page into the field
         big.search = el('input', 'width:100%;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.18);'
-            + 'background:rgba(255,255,255,.08);color:#fff;font:15px system-ui,sans-serif;outline:none');
-        big.search.placeholder = 'Cerca un indirizzo o un luogo';
+            + 'background:rgba(255,255,255,.08);color:#fff;font:16px system-ui,sans-serif;outline:none');
+        big.search.placeholder = tr('searchPlaceholder');
         big.results = el('div', 'margin-top:6px;display:flex;flex-direction:column');
-        const here = el('button', BTN + ';margin-top:10px;width:100%;background:rgba(255,255,255,.12)', 'La mia posizione');
-        side.append(big.search, big.results, here,
-            el('div', 'margin-top:10px;opacity:.65;font-size:12px', 'Trascina per spostarti, rotella per ingrandire, clic sulla mappa per mettere la partenza'));
+        const here = el('button', BTN + ';margin-top:10px;width:100%;background:rgba(255,255,255,.12)', tr('myPosition'));
+        side.append(big.search, big.results, here, languagePicker('margin-top:8px'),
+            el('div', 'margin-top:10px;opacity:.65;font-size:12px', tr(touch ? 'hintTouch' : 'hintMouse')));
         big.box.appendChild(side);
 
         const zoom = el('div', 'position:absolute;right:20px;top:20px;display:flex;flex-direction:column;gap:8px');
@@ -78,12 +97,12 @@
         big.box.appendChild(zoom);
 
         big.bar = el('div', CARD + ';position:absolute;left:50%;bottom:34px;transform:translateX(-50%);padding:10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;max-width:92%;box-sizing:border-box');
-        big.msg = el('div', 'padding:0 8px;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis', 'Cerca un luogo o fai clic sulla mappa');
-        big.go = el('button', BTN + ';background:#3e8bff', 'Parti da qui');
+        big.msg = el('div', 'padding:0 8px;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis', tr(touch ? 'pickTouch' : 'pickMouse'));
+        big.go = el('button', BTN + ';background:#3e8bff', tr('startHere'));
         big.go.dataset.simStart = '';
         big.go.disabled = true;
-        big.close = el('button', BTN + ';background:rgba(255,255,255,.12)', 'Chiudi (M)');
-        big.nav = el('button', BTN + ';background:#1f8a4c;display:none', 'Naviga fin qui');
+        big.close = el('button', BTN + ';background:rgba(255,255,255,.12)', tr('closeKey'));
+        big.nav = el('button', BTN + ';background:#1f8a4c;display:none', tr('navigateHere'));
         big.nav.disabled = true;
         big.bar.append(big.msg, big.nav, big.go, big.close);
         big.box.appendChild(big.bar);
@@ -112,15 +131,17 @@
             closeMap(true);
             if (!await osmSim.startFree({ lat: big.spawn[0], lon: big.spawn[1] })) {
                 openMap();
-                big.msg.textContent = 'Nessuna strada entro 300 m: scegli un altro punto';
+                big.msg.textContent = tr('noRoad300');
             }
+            // The sky of the new place straight away, not at the next minute's update
+            applySky(performance.now());
             town.at = 0;
         };
         here.onclick = () => {
-            big.msg.textContent = 'Cerco la tua posizione\u2026';
+            big.msg.textContent = tr('locating');
             navigator.geolocation.getCurrentPosition(
-                p => jump(p.coords.latitude, p.coords.longitude, 'La tua posizione'),
-                () => { big.msg.textContent = 'Posizione non disponibile: cerca un luogo'; },
+                p => jump(p.coords.latitude, p.coords.longitude, tr('yourPosition')),
+                () => { big.msg.textContent = tr('noPosition'); },
                 { enableHighAccuracy: true, timeout: 10000 });
         };
         let searchTimer = 0, searchSeq = 0;
@@ -132,8 +153,7 @@
                 if (q.length < 3) { big.results.innerHTML = ''; return; }
                 const [lat, lon] = latLon(big.cx, big.cy);
                 try {
-                    // lang=default keeps the local names; Photon has no Italian setting
-                    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lang=default&lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`);
+                    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lang=${I18n.photon}&lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`);
                     const feats = (await r.json()).features;
                     if (seq !== searchSeq) return;
                     big.results.innerHTML = '';
@@ -150,60 +170,80 @@
                         };
                         big.results.appendChild(item);
                     }
-                    if (!feats.length) big.results.innerHTML = '<div style="opacity:.6;padding:8px">Nessun risultato</div>';
+                    if (!feats.length) big.results.innerHTML = `<div style="opacity:.6;padding:8px">${tr('noResults')}</div>`;
                 } catch (err) {
-                    big.results.innerHTML = '<div style="opacity:.6;padding:8px">Ricerca non disponibile</div>';
+                    big.results.innerHTML = `<div style="opacity:.6;padding:8px">${tr('searchDown')}</div>`;
                 }
             }, 350);
         });
 
+        const at = e => { const r = big.canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
         big.canvas.addEventListener('wheel', e => {
             e.preventDefault();
-            zoomAt(e.offsetX, e.offsetY, -e.deltaY * 0.003);
+            // Firefox counts lines, not pixels
+            const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1), p = at(e);
+            zoomAt(p.x, p.y, Math.max(-1, Math.min(1, -dy * 0.003)));
         }, { passive: false });
-        // Mouse, touch and pen alike: one pointer drags, two pinch, a tap without moving picks the point
+        // Mouse, touch and pen alike: one pointer drags; two pinch, and the place between the fingers stays under them
+        // as they zoom and move; a tap without moving picks the point
         const pointers = new Map();
+        big.box.style.touchAction = 'none';
         big.canvas.style.touchAction = 'none';
+        // Starts over from the fingers down now: lifting one of two carries on dragging without a jump
+        const begin = () => {
+            const [a, b] = pointers.values();
+            big.pinch = big.drag = null;
+            if (b) {
+                const W = big.canvas.clientWidth, H = big.canvas.clientHeight, s = TILE_PX * 2 ** big.zoom;
+                const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+                big.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom: big.zoom, wx: big.cx + (mx - W / 2) / s, wy: big.cy + (my - H / 2) / s };
+            } else if (a) {
+                big.drag = { x: a.x, y: a.y, cx: big.cx, cy: big.cy };
+            }
+        };
         big.canvas.addEventListener('pointerdown', e => {
             big.canvas.setPointerCapture(e.pointerId);
-            pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
-            if (pointers.size === 1) big.drag = { x: e.clientX, y: e.clientY, cx: big.cx, cy: big.cy, moved: false };
-            else if (pointers.size === 2) {
-                const [a, b] = [...pointers.values()];
-                big.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), zoom: big.zoom };
-                if (big.drag) big.drag.moved = true;
-            }
+            const p = at(e);
+            if (!pointers.size) big.tap = { x: p.x, y: p.y, ok: true };
+            else if (big.tap) big.tap.ok = false;
+            pointers.set(e.pointerId, p);
+            begin();
             big.box.style.cursor = 'grabbing';
         });
         big.canvas.addEventListener('pointermove', e => {
             if (!pointers.has(e.pointerId)) return;
-            pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
-            if (pointers.size === 2 && big.pinch) {
-                const [a, b] = [...pointers.values()];
-                const want = big.pinch.zoom + Math.log2(Math.hypot(a.x - b.x, a.y - b.y) / big.pinch.d);
-                zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, want - big.zoom);
+            const p = at(e);
+            pointers.set(e.pointerId, p);
+            if (big.tap && Math.hypot(p.x - big.tap.x, p.y - big.tap.y) > 6) big.tap.ok = false;
+            const W = big.canvas.clientWidth, H = big.canvas.clientHeight;
+            if (big.pinch) {
+                const [a, b] = pointers.values(), pc = big.pinch;
+                big.zoom = Math.min(19, Math.max(5, pc.zoom + Math.log2(Math.hypot(a.x - b.x, a.y - b.y) / pc.d)));
+                const s = TILE_PX * 2 ** big.zoom;
+                big.cx = pc.wx - ((a.x + b.x) / 2 - W / 2) / s;
+                big.cy = pc.wy - ((a.y + b.y) / 2 - H / 2) / s;
+            } else if (big.drag) {
+                const d = big.drag, s = TILE_PX * 2 ** big.zoom;
+                big.cx = d.cx - (p.x - d.x) / s;
+                big.cy = d.cy - (p.y - d.y) / s;
+            } else {
                 return;
             }
-            const d = big.drag;
-            if (!d) return;
-            if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) d.moved = true;
-            const scale = TILE_PX * 2 ** big.zoom;
-            big.cx = d.cx - (e.clientX - d.x) / scale;
-            big.cy = d.cy - (e.clientY - d.y) / scale;
             big.dirty = true;
         });
         const release = e => {
             if (!pointers.has(e.pointerId)) return;
             pointers.delete(e.pointerId);
-            if (pointers.size) return;
-            const d = big.drag;
+            if (pointers.size) { begin(); return; }
             big.drag = big.pinch = null;
             big.box.style.cursor = 'grab';
-            if (!d || d.moved || e.type === 'pointercancel') return;
+            const tap = big.tap;
+            big.tap = null;
+            if (!tap || !tap.ok || e.type === 'pointercancel') return;
             // Only roads can be picked: the point moves onto the nearest one in reach
-            const p = snapToRoad(e.offsetX, e.offsetY);
+            const q = at(e), p = snapToRoad(q.x, q.y);
             if (!p) {
-                big.msg.textContent = 'Tocca una strada';
+                big.msg.textContent = tr(touch ? 'tapRoad' : 'clickRoad');
                 return;
             }
             const scale = TILE_PX * 2 ** big.zoom, W = big.canvas.clientWidth, H = big.canvas.clientHeight;
@@ -211,6 +251,8 @@
         };
         big.canvas.addEventListener('pointerup', release);
         big.canvas.addEventListener('pointercancel', release);
+        // Safari zooms the whole page on a pinch whatever the viewport says; the map and the car do their own
+        for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
     }
 
     // Nearest point on a drawn road within 40 px of (sx, sy), in screen pixels
@@ -250,7 +292,7 @@
         big.label = label || '';
         big.go.disabled = big.nav.disabled = false;
         big.dirty = true;
-        big.msg.textContent = label || 'Punto scelto';
+        big.msg.textContent = label || tr('pointChosen');
         if (label) return;
         const p = await reverse(ll[0], ll[1]);
         if (p && big.spawn === ll) big.msg.textContent = big.label = [p.street || p.name, p.city].filter(Boolean).join(', ');
@@ -343,7 +385,7 @@
             if (!l) continue;
             const P = tileProjector(x, y, z, l.extent, scale, W, H);
             for (const f of l.features) {
-                const name = f.props.name, cls = f.props.class;
+                const name = I18n.name(f.props), cls = f.props.class;
                 if (!name || f.type !== 1) continue;
                 const size = { city: 18, town: 16, village: 14, suburb: 13, hamlet: 12, quarter: 12, neighbourhood: 11 }[cls];
                 if (!size) continue;
@@ -360,7 +402,7 @@
                 if (!l) continue;
                 const P = tileProjector(x, y, z, l.extent, scale, W, H);
                 for (const f of l.features) {
-                    const name = f.props.name || f.props.ref;
+                    const name = I18n.name(f.props) || f.props.ref;
                     if (!name || f.type !== 2) continue;
                     for (const line of f.lines) {
                         // On the line's longest stretch, upright
@@ -414,9 +456,10 @@
                     g.arc(sx, sy, 5, 0, 7);
                     g.fill();
                     g.stroke();
-                    if (f.props.name && big.zoom >= 16.5) {
-                        const w = g.measureText(f.props.name).width;
-                        if (free(sx + 8, sy - 7, w, 14)) halo(g, f.props.name, sx + 8, sy, '#e8ecf1');
+                    const name = I18n.name(f.props);
+                    if (name && big.zoom >= 16.5) {
+                        const w = g.measureText(name).width;
+                        if (free(sx + 8, sy - 7, w, 14)) halo(g, name, sx + 8, sy, '#e8ecf1');
                     }
                 }
             }
@@ -527,7 +570,7 @@
         big.close.style.display = f.on ? '' : 'none';
         // Before a drive there is one thing to do; while driving, going somewhere comes first and starting over second
         big.nav.style.display = f.on ? '' : 'none';
-        big.go.textContent = f.on ? 'Riparti da qui' : 'Parti da qui';
+        big.go.textContent = tr(f.on ? 'restartHere' : 'startHere');
         big.go.style.background = f.on ? 'rgba(255,255,255,.12)' : '#3e8bff';
         // Keys go to the map while it is open, not to the car
         f.paused = true;
@@ -621,7 +664,7 @@
     const town = { name: '', at: 0, x: 0, y: 0 };
     async function reverse(lat, lon) {
         try {
-            const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&lang=default&limit=1`);
+            const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&lang=${I18n.photon}&limit=1`);
             const f = (await r.json()).features[0];
             return f && f.properties;
         } catch (err) {
@@ -645,7 +688,7 @@
         roadBox = el('div', QUIET + ';position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:400;display:none;text-align:center;white-space:nowrap;opacity:.9');
         document.body.appendChild(roadBox);
         backBtn = el('button', BTN + ';position:fixed;left:50%;top:96px;transform:translateX(-50%);z-index:400;background:#3e8bff;display:none;'
-            + 'box-shadow:0 6px 24px rgba(0,0,0,.45)', 'Torna sulla strada (R)');
+            + 'box-shadow:0 6px 24px rgba(0,0,0,.45)', tr('backToRoadKey'));
         backBtn.onclick = () => { backBtn.blur(); osmSim.backToRoad(); };
         document.body.appendChild(backBtn);
     }
@@ -657,9 +700,9 @@
             let line = '';
             if (t) {
                 const ref = t.ref ? `<span style="background:${/^A\d/.test(t.ref) ? '#1f8a4c' : '#2a6fdb'};border-radius:4px;padding:1px 6px;font-size:12px;margin-right:6px;text-shadow:none">${escapeHtml(t.ref)}</span>` : '';
-                line = ref + escapeHtml(t.name || (t.ref ? '' : 'Strada senza nome'));
+                line = ref + escapeHtml(t.name || (t.ref ? '' : tr('unnamedRoad')));
             } else {
-                line = '<span style="opacity:.75">Fuori strada</span>';
+                line = `<span style="opacity:.75">${tr('offRoad')}</span>`;
             }
             const html = `<div style="font-size:15px;font-weight:600">${line}</div>`
                 + (town.name ? `<div style="font-size:12px;opacity:.8;margin-top:1px">${escapeHtml(town.name)}</div>` : '');
@@ -760,7 +803,7 @@
         if (!f.on || !dest) return;
         const from = OsmMatch.unproject(f.x, f.y), to = OsmMatch.project(dest[0], dest[1]);
         const dist = Math.hypot(to.x - f.x, to.y - f.y);
-        if (dist > 60000) { big.msg.textContent = 'Troppo lontano: scegli una meta entro 60 km'; return; }
+        if (dist > 60000) { big.msg.textContent = tr('tooFar'); return; }
         closeMap(true);
         // Roads along the straight line, wider for longer trips, before searching the route
         const pts = [], n = Math.max(1, Math.ceil(dist / 1500));
@@ -768,8 +811,8 @@
         f.paused = true;
         await osmSim.prepare(pts, dist > 3000 ? 2 : 1, 0);
         f.paused = false;
-        Object.assign(nav, { dest, label: label || 'Destinazione' });
-        if (!route()) flash('Percorso non trovato verso ' + nav.label);
+        Object.assign(nav, { dest, label: label || tr('destination') });
+        if (!route()) flash(tr('noRouteTo', nav.label));
     }
 
     function route() {
@@ -795,9 +838,9 @@
             const turn = OsmMatch.turnOf(a.fwd ? a.e.brg : a.e.brg + 180, b.fwd ? b.e.brg : b.e.brg + 180);
             if (Math.abs(turn) < 25) continue;
             const name = b.e.tags.name || b.e.tags.ref;
-            man.push({ s: b.s0, dir: turn < 0 ? 1 : -1, angle: Math.round(Math.abs(turn)), text: `Svolta a ${turn < 0 ? 'sinistra' : 'destra'}${name ? ' in ' + name : ''}` });
+            man.push({ s: b.s0, dir: turn < 0 ? 1 : -1, angle: Math.round(Math.abs(turn)), text: name ? tr(turn < 0 ? 'turnLeftInto' : 'turnRightInto', name) : tr(turn < 0 ? 'turnLeft' : 'turnRight') });
         }
-        man.push({ s: S[S.length - 1], dir: 0, angle: 0, text: 'Arrivo a ' + nav.label });
+        man.push({ s: S[S.length - 1], dir: 0, angle: 0, text: tr('arriveAt', nav.label) });
         Object.assign(nav, { on: true, pts, S, T, man, i: 0, off: 0, ll: pts.map(p => (q => [q.lat, q.lon])(OsmMatch.unproject(p.x, p.y))) });
         big.dirty = true;
         return true;
@@ -810,7 +853,7 @@
     }
 
     const roundDist = m => m >= 1000 ? Math.round(m / 100) * 100 : m >= 300 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10;
-    const fmtDist = m => m >= 1000 ? (m / 1000).toFixed(1).replace('.', ',') + ' km' : roundDist(m) + ' m';
+    const fmtDist = m => m >= 1000 ? I18n.num(m / 1000, 1) + ' km' : roundDist(m) + ' m';
 
     function guide(now) {
         navBox.style.display = nav.on && osmSim.free.on ? 'flex' : 'none';
@@ -828,13 +871,13 @@
         const s = nav.S[best.i] + (nav.S[best.i + 1] - nav.S[best.i]) * best.t, left = nav.S[nav.S.length - 1] - s;
         if (left < 25) {
             stopNav();
-            flash('Sei arrivato a ' + nav.label);
+            flash(tr('arrived', nav.label));
             return;
         }
         // Off the route for a few seconds: a new route from here
         if (best.d > 40) {
             nav.off = nav.off || now;
-            if (now - nav.off > 4000 && !route()) flash('Percorso non trovato');
+            if (now - nav.off > 4000 && !route()) flash(tr('noRoute'));
         } else nav.off = 0;
         const m = nav.man.find(m => m.s > s - 5), meters = Math.max(0, m.s - s);
         setUpcomingTurn(m.dir ? { dir: m.dir, angle: m.angle, meters: roundDist(meters) } : null);
@@ -844,7 +887,7 @@
         if (navBox.firstChild.innerHTML !== html) navBox.firstChild.innerHTML = html;
         const k = nav.T.length - 1, timeLeft = nav.T[k] - (nav.T[best.i] + (nav.T[best.i + 1] - nav.T[best.i]) * best.t);
         const eta = new Date(Date.now() + timeLeft * 1000);
-        setTripInfo({ arrivalLabel: 'ARRIVO', arrival: eta.toTimeString().slice(0, 5), remainingLabel: 'DISTANZA', remaining: fmtDist(left) });
+        setTripInfo({ arrivalLabel: tr('arrival'), arrival: eta.toTimeString().slice(0, 5), remainingLabel: tr('distance'), remaining: fmtDist(left) });
     }
 
     // Short message in the middle of the screen
@@ -861,7 +904,7 @@
             + 'background:rgba(14,18,24,.5);border-radius:10px;color:#fff;font-family:system-ui,sans-serif');
         navBox.append(el('div', 'display:flex;gap:10px;align-items:center'));
         const stopBtn = el('button', 'background:transparent;border:0;color:#fff;font-size:20px;cursor:pointer;opacity:.7;margin-left:6px', '✕');
-        stopBtn.title = 'Termina la navigazione';
+        stopBtn.title = tr('endNav');
         stopBtn.onclick = () => { stopBtn.blur(); stopNav(); };
         navBox.append(stopBtn);
         document.body.appendChild(navBox);
@@ -918,7 +961,7 @@
         // Directions on the left under the minimap, off the road ahead
         Object.assign(navBox.style, { left: '16px', top: '156px' });
         backBtn.style.top = '172px';
-        backBtn.textContent = 'Torna sulla strada';
+        backBtn.textContent = tr('backToRoad');
     }
 
     function loop(now) {
@@ -939,11 +982,12 @@
     }
 
     function buildOptions() {
-        const box = el('div', CARD + ';position:fixed;right:16px;top:16px;z-index:400;padding:8px;display:flex;flex-direction:column;gap:6px;font-size:13px');
-        const mapBtn = el('button', BTN + ';background:#3e8bff;padding:8px 10px;font-size:13px', 'Mappa (M)');
-        mapBtn.onclick = () => { mapBtn.blur(); openMap(); };
+        // Only the map and a gear in the corner; the settings open under the gear
+        const box = el('div', CARD + ';position:fixed;right:16px;top:64px;z-index:460;padding:8px;display:none;flex-direction:column;gap:6px;font-size:13px');
+        const show = on => { box.style.display = on ? 'flex' : 'none'; gear.style.background = on ? '#3e8bff' : 'rgba(14,18,24,.88)'; };
+        const isOpen = () => box.style.display !== 'none';
         const seg = el('div', 'display:flex;background:rgba(255,255,255,.1);border-radius:9px;padding:2px');
-        const modes = [['day', 'Giorno'], ['night', 'Notte'], ['auto', 'Auto']].map(([m, label]) => {
+        const modes = ['day', 'night', 'auto'].map(m => [m, tr(m)]).map(([m, label]) => {
             const b = el('button', 'flex:1;border:0;border-radius:7px;padding:6px 9px;color:#fff;font:13px system-ui,sans-serif;cursor:pointer;background:transparent', label);
             b.onclick = () => { sky.mode = m; paint(); applySky(performance.now()); b.blur(); };
             seg.appendChild(b);
@@ -955,12 +999,12 @@
             + 'padding:6px 6px;border-radius:8px;font:13px system-ui,sans-serif;cursor:pointer');
         const dot = el('span', 'width:30px;height:16px;border-radius:8px;position:relative'), knob = el('span', 'position:absolute;top:2px;width:12px;height:12px;border-radius:50%;background:#fff');
         dot.appendChild(knob);
-        audio.append(el('span', '', 'Audio motore'), dot);
+        audio.append(el('span', '', tr('engineSound')), dot);
         const paintAudio = () => { dot.style.background = Engine.on ? '#3e8bff' : 'rgba(255,255,255,.25)'; knob.style.left = Engine.on ? '16px' : '2px'; };
         audio.onclick = () => { Engine.on = !Engine.on; if (Engine.on) Engine.start(); paintAudio(); audio.blur(); };
         paintAudio();
         const wseg = el('div', 'display:flex;background:rgba(255,255,255,.1);border-radius:9px;padding:2px');
-        const wmodes = [['clear', 'Sereno'], ['fog', 'Nebbia'], ['rain', 'Pioggia']].map(([m, label]) => {
+        const wmodes = ['clear', 'fog', 'rain'].map(m => [m, tr(m)]).map(([m, label]) => {
             const b = el('button', 'flex:1;border:0;border-radius:7px;padding:6px 9px;color:#fff;font:13px system-ui,sans-serif;cursor:pointer;background:transparent', label);
             b.onclick = () => { weather.mode = m; paintW(); applySky(performance.now()); b.blur(); };
             wseg.appendChild(b);
@@ -968,32 +1012,35 @@
         });
         const paintW = () => wmodes.forEach(([m, b]) => { b.style.background = weather.mode === m ? '#3e8bff' : 'transparent'; });
         paintW();
-        const back = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', 'Torna sulla strada (R)');
+        const back = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', tr('backToRoadKey'));
         back.onclick = () => {
             back.blur();
             if (!osmSim.free.on) return;
-            flash(osmSim.backToRoad() ? 'Di nuovo sulla strada pi\u00f9 vicina' : 'Nessuna strada entro 1 km');
-            if (touch) box.style.display = 'none';
+            flash(tr(osmSim.backToRoad() ? 'backAgain' : 'noRoad1km'));
+            show(false);
         };
-        if (touch) back.textContent = 'Torna sulla strada';
-        const fs = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', 'Schermo intero');
+        if (touch) back.textContent = tr('backToRoad');
+        const fs = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', tr('fullscreen'));
         fs.onclick = () => { fs.blur(); fullscreen(!(document.fullscreenElement || document.webkitFullscreenElement)); };
-        box.append(mapBtn, seg, wseg, audio, back, fs);
+        box.append(seg, wseg, audio, languagePicker('padding:4px 6px'), back, fs);
         document.body.appendChild(box);
-        // On phones the options fold behind a button next to the map's
-        if (touch) {
-            box.style.display = 'none';
-            box.style.top = '64px';
-            box.style.zIndex = '460';
-            const bar = el('div', 'position:fixed;right:16px;top:16px;z-index:401;display:flex;gap:8px');
-            const map2 = el('button', BTN + ';background:#3e8bff;padding:9px 14px;font-size:13px', 'Mappa');
-            const more = el('button', BTN + ';background:rgba(14,18,24,.88);padding:9px 14px;font-size:13px', 'Opzioni');
-            map2.onclick = () => openMap();
-            more.onclick = () => { box.style.display = box.style.display === 'none' ? 'flex' : 'none'; };
-            bar.append(map2, more);
-            document.body.appendChild(bar);
-            mapBtn.style.display = 'none';
-        }
+        const bar = el('div', 'position:fixed;right:16px;top:16px;z-index:401;display:flex;gap:8px');
+        const mapBtn = el('button', BTN + ';background:#3e8bff;padding:0 14px;height:40px;font-size:13px', tr(touch ? 'map' : 'mapKey'));
+        mapBtn.onclick = () => { mapBtn.blur(); show(false); openMap(); };
+        const gear = el('button', BTN + ';background:rgba(14,18,24,.88);width:40px;height:40px;padding:0;display:flex;align-items:center;justify-content:center',
+            '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            + '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09'
+            + 'A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09'
+            + 'A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09'
+            + 'a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09'
+            + 'a1.65 1.65 0 0 0-1.51 1z"/></svg>');
+        gear.title = gear.ariaLabel = tr('options');
+        gear.onclick = () => { gear.blur(); show(!isOpen()); };
+        bar.append(mapBtn, gear);
+        document.body.appendChild(bar);
+        // A tap or click anywhere else, or Escape, folds them away
+        document.addEventListener('pointerdown', e => { if (isOpen() && !box.contains(e.target) && !gear.contains(e.target)) show(false); }, true);
+        addEventListener('keydown', e => { if (e.code === 'Escape' && isOpen()) show(false); });
     }
 
     // Fullscreen, and on phones locked sideways; needs a tap, and iPhones only allow it from the home screen
@@ -1026,7 +1073,7 @@
         });
         loadModelFromUri('kiri10.glb');
         setRoadLinesConfig(true, 'left_dashed');
-        setLocalizedStrings({ loading: 'Caricamento...', loadingProgress: 'Caricamento... {0}%', errorLoading: 'Errore', speedLabel: 'VELOCIT\u00c0', speedUnit: 'km/h' });
+        setLocalizedStrings({ loading: tr('loading'), loadingProgress: tr('loadingProgress'), errorLoading: tr('error'), speedLabel: tr('speed'), speedUnit: 'km/h' });
         const credit = document.getElementById('mapAttribution');
         if (credit) credit.textContent = '\u00a9 OpenStreetMap contributors \u00b7 \u00a9 OpenMapTiles \u00b7 OpenFreeMap';
         await osmSim.ready;
