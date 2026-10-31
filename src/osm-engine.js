@@ -66,7 +66,7 @@
         E.noise = noise;
     }
 
-    // One-off bursts: a crash thud
+    // One-off bursts: a crash thud, the fuel pump
     function burst(freq, q, dur, level) {
         if (!E.ctx) return;
         const ctx = E.ctx, s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain(), t = ctx.currentTime;
@@ -83,6 +83,43 @@
         s.stop(t + dur);
     }
     E.crash = strength => burst(120, 0.8, 0.5, Math.min(1.2, 0.3 + strength * 0.08));
+    // Filling up: the nozzle's clunk, and a chime when the tank is full
+    E.pump = () => burst(500, 3, 0.25, 0.4);
+    E.ding = () => { burst(1700, 25, 0.25, 0.35); setTimeout(() => burst(2270, 25, 0.35, 0.3), 140); };
+
+    // A horn: two tones a major third apart, like a car's pair. Far away it comes later (sound at 343 m/s), quieter
+    // and duller, from its side. Returns the stop, also heard `delay` late
+    E.horn = ({ gain = 0.22, pan = 0, delay = 0, cutoff = 3500, pitch = 1 } = {}) => {
+        if (!E.ctx) return () => {};
+        const ctx = E.ctx, t = ctx.currentTime + delay, out = ctx.createGain(), lp = ctx.createBiquadFilter(), side = ctx.createStereoPanner();
+        lp.type = 'lowpass';
+        lp.frequency.value = cutoff;
+        side.pan.value = Math.max(-1, Math.min(1, pan));
+        out.gain.setValueAtTime(0, t);
+        out.gain.linearRampToValueAtTime(gain, t + 0.02);
+        out.connect(lp);
+        lp.connect(side);
+        side.connect(ctx.destination);
+        const oscs = [415, 520].map(hz => {
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.type = 'square';
+            o.frequency.value = hz * pitch;
+            g.gain.value = 0.5;
+            o.connect(g);
+            g.connect(out);
+            o.start(t);
+            return o;
+        });
+        let stopped = false;
+        return () => {
+            if (stopped) return;
+            stopped = true;
+            const end = Math.max(ctx.currentTime + delay, t + 0.08);
+            out.gain.setValueAtTime(gain, end);
+            out.gain.linearRampToValueAtTime(0, end + 0.06);
+            for (const o of oscs) o.stop(end + 0.08);
+        };
+    };
 
     // Needs a user gesture: called from the click that starts a drive
     E.start = () => {
@@ -102,8 +139,15 @@
         }
         const v = Math.abs(f.v);
         E.wind.gain.setTargetAtTime(Math.min(0.25, (v / 40) ** 2 * 0.2), now, 0.1);
-        E.tyres.gain.setTargetAtTime(f.air ? 0 : Math.min(0.12, v / 40 * 0.1), now, 0.1);
+        // Off the road the tyres rumble on the ground, louder than on asphalt
+        E.tyres.gain.setTargetAtTime(f.air ? 0 : Math.min(0.12, v / 40 * 0.1) * (1 + 2.5 * (f.off || 0)) + (f.off || 0) * Math.min(0.08, v / 10 * 0.08), now, 0.1);
         E.squeal.gain.setTargetAtTime(!f.air && f.brk > 0.85 && v > 6 ? 0.06 : 0, now, 0.05);
+        // Out of fuel the engine is silent; the wind and the tyres go on
+        if (window.Fuel && Fuel.empty) {
+            E.master.gain.setTargetAtTime(0, now, 0.3);
+            E.hiss.gain.setTargetAtTime(0, now, 0.3);
+            return;
+        }
         // During a shift the throttle is cut for a moment
         const load = performance.now() < f.shiftUntil ? 0.1 : f.thr, rpm = f.rpm, fire = rpm / 60 * 2;
         for (const { o, mul } of E.oscs) o.frequency.setTargetAtTime(fire * mul, now, 0.015);

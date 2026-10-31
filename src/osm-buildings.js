@@ -4,6 +4,19 @@
     const CELL = 12;   // m of facade per texture repeat: 4 x 4 windows of 3 m
     const built = new Map();
     const footprints = new Map();   // tile key -> [{ rings: [[{x, y}]], minx, maxx, miny, maxy }]
+    // The same footprints by 16 m cell, for asking about a point many times per scene
+    const GRID = 16, grid = new Map(), cellKey = (i, j) => (i + 50000) * 100000 + j + 50000;
+    function index(list, add) {
+        for (const p of list) {
+            for (let i = Math.floor(p.minx / GRID); i <= Math.floor(p.maxx / GRID); i++) {
+                for (let j = Math.floor(p.miny / GRID); j <= Math.floor(p.maxy / GRID); j++) {
+                    const k = cellKey(i, j);
+                    if (add) { if (!grid.has(k)) grid.set(k, []); grid.get(k).push(p); }
+                    else { const c = grid.get(k); if (c) { const n = c.indexOf(p); if (n >= 0) c.splice(n, 1); if (!c.length) grid.delete(k); } }
+                }
+            }
+        }
+    }
     let mats = null, builtOn = true, dark = null;
 
     // Facade of 4 x 4 floors and bays; at night a third of the windows are lit
@@ -48,6 +61,7 @@
             }
             const ground = Math.min(...rings[0].map(p => Terrain.dem(p.x, p.y)));
             const bottom = b.min > 0 ? ground + b.min : ground - 1, top = ground + Math.max(3, b.h);
+            if (feet.length && feet[feet.length - 1].rings === rings) feet[feet.length - 1].top = top;
             const tint = new THREE.Color(b.colour && /^#[0-9a-f]{6}$/i.test(b.colour) ? b.colour : TINTS[Math.abs(Math.round(rings[0][0].x * 7 + rings[0][0].y * 13)) % TINTS.length]);
             for (const ring of rings) {
                 let s = 0;
@@ -81,6 +95,7 @@
         map.inner.add(m);
         built.set(key, m);
         footprints.set(key, feet);
+        index(feet, true);
     }
 
     function drop(key) {
@@ -88,6 +103,7 @@
         map.inner.remove(m);
         m.geometry.dispose();
         built.delete(key);
+        index(footprints.get(key) || [], false);
         footprints.delete(key);
     }
 
@@ -100,19 +116,22 @@
         return c;
     }
 
+    function footprintAt(x, y) {
+        const c = grid.get(cellKey(Math.floor(x / GRID), Math.floor(y / GRID)));
+        if (c) for (const p of c) {
+            if (x < p.minx || x > p.maxx || y < p.miny || y > p.maxy) continue;
+            if (inside(x, y, p.rings[0]) && !p.rings.slice(1).some(h => inside(x, y, h))) return p;
+        }
+        return null;
+    }
+
     const Buildings = {
         reset: () => { for (const k of [...built.keys()]) drop(k); for (const t of [...plazas.keys()]) dropPlaza(t); },
         has: key => built.has(key),
         // Whether (x, y) is inside a building standing on the ground (not a bridge or an overhang)
-        hit: (x, y) => {
-            for (const list of footprints.values()) {
-                for (const p of list) {
-                    if (x < p.minx || x > p.maxx || y < p.miny || y > p.maxy) continue;
-                    if (inside(x, y, p.rings[0]) && !p.rings.slice(1).some(h => inside(x, y, h))) return true;
-                }
-            }
-            return false;
-        }
+        hit: (x, y) => !!footprintAt(x, y),
+        // Height of the roof over (x, y), null outside the buildings drawn
+        topAt: (x, y) => { const p = footprintAt(x, y); return p ? p.top : null; }
     };
 
     // ---- Toll plazas: a canopy across the lanes on pillars, a booth between each pair of lanes ----

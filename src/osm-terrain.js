@@ -144,6 +144,22 @@
         return T.wayInfo.get(way) || { hw: '', urban: true, bridge: false, tunnel: false };
     }
 
+    // Width of the road at a sample, left and right of its line: its own, narrower on a side where a building closes in
+    // (old town streets mapped without their width, service alleys, lines mapped off the street's middle). The asphalt
+    // reaches 0.4 m past it: that edge stays clear of the walls, found to within the 0.25 m step. A side squeezed below
+    // 0.3 m keeps that; covered passages keep the road's own
+    function fit(p, hw) {
+        const side = sgn => {
+            if (!window.Buildings) return hw;
+            for (let d = 0.25; d <= hw + 0.4 + 0.01; d += 0.25) {
+                if (Buildings.hit(p.x + p.nx * d * sgn, p.y + p.ny * d * sgn)) return Math.max(0.3, d - 0.25 - 0.4);
+            }
+            return hw;
+        };
+        if (window.Buildings && Buildings.hit(p.x, p.y)) return [hw, hw];
+        return [side(1), side(-1)];
+    }
+
     function buildProfiles(roads) {
         T.samples = [];
         T.grid = new Map();
@@ -153,11 +169,15 @@
             const pts = resample(smoothPolyline(r.pts), PROFILE_STEP);
             if (pts.length < 2) return;
             const hw = (r.fwd + r.back) * r.laneW / 2, first = T.samples.length, end = pts[pts.length - 1];
-            T.profiles[ri] = { pts, hs: null, first };
+            // Narrowest over 4 m either way, so the edges step in and out cleanly instead of following every wall
+            const raw = info.bridge || info.tunnel ? pts.map(() => [hw, hw]) : pts.map(p => fit(p, hw));
+            const narrow = k => raw.map((w, i) => Math.min(...raw.slice(Math.max(0, i - 2), i + 3).map(v => v[k])));
+            const wl = narrow(0), wr = narrow(1), ws = wl.map((l, i) => Math.max(l, wr[i]));
+            T.profiles[ri] = { pts, hs: null, wl, wr, ws, hw, first };
             // A bridge spans the valley and a tunnel goes through the hill: straight between their ends
             const span = info.bridge || info.tunnel ? { h0: smoothDem(pts[0].x, pts[0].y), h1: smoothDem(end.x, end.y), L: end.s || 1 } : null;
             pts.forEach((p, i) => {
-                const s = { x: p.x, y: p.y, s: p.s, i: first + i, first, last: first + pts.length - 1, hw, road: ri, info, span };
+                const s = { x: p.x, y: p.y, s: p.s, i: first + i, first, last: first + pts.length - 1, hw: ws[i], road: ri, info, span };
                 T.samples.push(s);
                 const key = cellKey(Math.floor(p.x / CELL), Math.floor(p.y / CELL));
                 if (!T.grid.has(key)) T.grid.set(key, []);
@@ -176,7 +196,8 @@
         if (pts[k].s > s) k = 0;
         while (k < pts.length - 2 && pts[k + 1].s <= s) k++;
         const a = pts[k], b = pts[k + 1], t = b.s > a.s ? Math.min(1, Math.max(0, (s - a.s) / (b.s - a.s))) : 0;
-        return { h: p.hs[k] + (p.hs[k + 1] - p.hs[k]) * t, k };
+        const lerp = a => a[k] + (a[k + 1] - a[k]) * t;
+        return { h: lerp(p.hs), wl: lerp(p.wl), wr: lerp(p.wr), k };
     }
 
     function nearest(x, y, r, skip) {
@@ -219,6 +240,9 @@
     T.surface = (x, y) => {
         const n = nearest(x, y, 20);
         if (n && n.d <= n.s.hw + 0.4) return centreHeight(n, x, y);
+        // Off the asphalt, a fuel station's forecourt: flat, and closing the gap to a road that curves away from it
+        const pad = window.Fuel && Fuel.heightAt(x, y);
+        if (pad != null) return pad;
         const g = T.mesh;
         if (!g) return smoothDem(x, y);
         const fx = (x - g.gx) / GROUND_STEP, fy = (y - g.gy) / GROUND_STEP, i = Math.floor(fx), j = Math.floor(fy);
@@ -227,6 +251,11 @@
         return a + b <= 1
             ? h(0, 0) + a * (h(1, 0) - h(0, 0)) + b * (h(0, 1) - h(0, 0))
             : h(1, 1) + (1 - a) * (h(0, 1) - h(1, 1)) + (1 - b) * (h(1, 0) - h(1, 1));
+    };
+    // Whether (x, y) is on the asphalt drawn, or on a fuel station's forecourt
+    T.onRoad = (x, y) => {
+        const n = nearest(x, y, 20);
+        return !!(n && n.d <= n.s.hw + 0.4) || !!(window.Fuel && Fuel.heightAt(x, y) != null);
     };
     // Set by the free-driving simulation: { x, y, brg (deg), z, pitch, roll }; the view then follows it
     T.car = null;
@@ -267,6 +296,7 @@
                 ground: new THREE.MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 4 }),
                 asphalt: new THREE.MeshBasicMaterial({ polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }),
                 rail: new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
+                bank: new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 3, polygonOffsetUnits: 3 }),
             };
         }
         const u = 1 / METERS_PER_UNIT, y0 = roadMesh.position.y;
@@ -300,7 +330,7 @@
                 }
             }
             for (const v of touched) {
-                const t = Math.min(1, Math.max(0, (bestD[v] - s0.hw - GROUND_STEP * 1.5) / 16));
+                const t = Math.min(1, Math.max(0, (bestD[v] - bestS[v].hw - GROUND_STEP * 1.5) / 16));
                 if (t < 1) {
                     target[v] = Math.min(target[v], centreHeight({ s: bestS[v] }, gx + (v % n) * GROUND_STEP, gy + Math.floor(v / n) * GROUND_STEP) - 0.3);
                     tMin[v] = Math.min(tMin[v], t);
@@ -315,6 +345,9 @@
                 const v = j * n + i, tg = target[v], t = tMin[v];
                 let h = dem(gx + i * GROUND_STEP, gy + j * GROUND_STEP);
                 if (tg !== Infinity) h = tg + (h - tg) * t * t * (3 - 2 * t);
+                // Under a forecourt, never above it
+                const pad = window.Fuel && Fuel.padAt(gx + i * GROUND_STEP, gy + j * GROUND_STEP, Fuel.SKIRT + GROUND_STEP);
+                if (pad) h = Math.min(h, pad.h - 0.3);
                 hs[v] = h;
             }
         }
@@ -351,7 +384,15 @@
             }
         }
 
-        const asphalt = [], rail = [];
+        const asphalt = [], rail = [], bank = [], bankCol = [];
+        // The ground mesh's own height, as drawn between its vertices
+        const meshAt = (x, y) => {
+            const fx = (x - gx) / GROUND_STEP, fy = (y - gy) / GROUND_STEP, i = Math.floor(fx), j = Math.floor(fy);
+            if (i < 0 || j < 0 || i >= n - 1 || j >= n - 1) return dem(x, y);
+            const a = fx - i, b = fy - j, h = (p, q) => hs[(j + q) * n + i + p];
+            return a + b <= 1 ? h(0, 0) + a * (h(1, 0) - h(0, 0)) + b * (h(0, 1) - h(0, 0)) : h(1, 1) + (1 - a) * (h(0, 1) - h(1, 1)) + (1 - b) * (h(1, 0) - h(1, 1));
+        };
+        const earth = new THREE.Color(isDarkTheme ? 0x221f1a : 0x8f8266);
         // Guardrail segments in map metres, for the car's collisions
         T.rails = [];
         const post = (x, y, h) => {
@@ -365,28 +406,45 @@
         roads.forEach((r, ri) => {
             if (!T.profiles[ri]) return;
             const info = wayInfo(r.way);
-            const { pts, hs } = T.profiles[ri];
-            const W = (r.fwd + r.back) * r.laneW / 2 + 0.4;
+            const { pts, hs, wl, wr } = T.profiles[ri];
             const inRange = p => Math.hypot(p.x - cx, p.y - cy) < MAP_RANGE && (!r.clip || Math.hypot(p.x - r.clip.x, p.y - r.clip.y) < r.clip.r);
             for (let i = 0; i < pts.length - 1; i++) {
                 const a = pts[i], b = pts[i + 1];
                 if (!inRange(a) || !inRange(b)) continue;
-                const L = (p, h) => V(p.x + p.nx * W, p.y + p.ny * W, h), R = (p, h) => V(p.x - p.nx * W, p.y - p.ny * W, h);
-                asphalt.push(...R(a, hs[i]), ...R(b, hs[i + 1]), ...L(a, hs[i]), ...L(a, hs[i]), ...R(b, hs[i + 1]), ...L(b, hs[i + 1]));
+                const La = wl[i] + 0.4, Lb = wl[i + 1] + 0.4, Ra = wr[i] + 0.4, Rb = wr[i + 1] + 0.4;
+                const L = (p, h, W) => V(p.x + p.nx * W, p.y + p.ny * W, h), R = (p, h, W) => V(p.x - p.nx * W, p.y - p.ny * W, h);
+                asphalt.push(...R(a, hs[i], Ra), ...R(b, hs[i + 1], Rb), ...L(a, hs[i], La), ...L(a, hs[i], La), ...R(b, hs[i + 1], Rb), ...L(b, hs[i + 1], Lb));
+                // Where the ground has been left below the road (a road above another on a hillside keeps the ground
+                // at the lower one's level), an embankment from the edge down to it, so the road doesn't hang in the air
+                if (info.bridge || info.tunnel) continue;
+                for (const side of [1, -1]) {
+                    const edge = (p, h, W) => {
+                        const ex = p.x + p.nx * W * side, ey = p.y + p.ny * W * side;
+                        const drop = h - meshAt(ex, ey);
+                        // Sloping out about 2:1, to the ground where it lands
+                        const out = Math.min(4, Math.max(0, drop) * 0.5), bx = ex + p.nx * out * side, by = ey + p.ny * out * side;
+                        return { drop, top: V(ex, ey, h), bottom: V(bx, by, meshAt(bx, by) - 0.3) };
+                    };
+                    const ea = edge(a, hs[i], side > 0 ? La : Ra), eb = edge(b, hs[i + 1], side > 0 ? Lb : Rb);
+                    if (Math.max(ea.drop, eb.drop) < 0.3) continue;
+                    bank.push(...ea.top, ...eb.top, ...eb.bottom, ...ea.top, ...eb.bottom, ...ea.bottom);
+                    // Darker towards the bottom, lit like the ground
+                    for (const k of [0.95, 0.95, 0.7, 0.95, 0.7, 0.7]) bankCol.push(earth.r * k, earth.g * k, earth.b * k);
+                }
             }
 
             // Guardrails out of town on the bigger roads: always on motorways, trunks and bridges, elsewhere on embankments
             if (r.clip || info.urban || info.tunnel || !RAILED.includes(info.hw)) return;
             const always = info.hw === 'motorway' || info.hw === 'trunk' || info.bridge;
-            const off = W + 0.5;
             for (const side of [1, -1]) {
                 let last = null;
                 pts.forEach((p, i) => {
-                    const x = p.x + p.nx * off * side, y = p.y + p.ny * off * side, h = hs[i];
+                    const off = (side > 0 ? wl[i] : wr[i]) + 0.9, x = p.x + p.nx * off * side, y = p.y + p.ny * off * side, h = hs[i];
                     const drop = h - dem(p.x + p.nx * (off + 4) * side, p.y + p.ny * (off + 4) * side);
                     // Not across a junction
                     const other = nearest(x, y, 25, ri);
-                    const want = inRange(p) && (always || drop > 1.2) && !(other && other.d < other.s.hw + 4);
+                    // Nor in front of a fuel station: its forecourt opens onto the road
+                    const want = inRange(p) && (always || drop > 1.2) && !(other && other.d < other.s.hw + 4) && !(window.Fuel && Fuel.padAt(x, y, 6));
                     if (!want) { last = null; return; }
                     if (last) {
                         T.rails.push({ ax: last.x, ay: last.y, bx: x, by: y });
@@ -401,7 +459,7 @@
 
         mats.asphalt.color.set(palette().asphalt);
         mats.rail.color.set(palette().rail);
-        for (const [pos, mat, col] of [[groundPos, mats.ground, groundCol], [asphalt, mats.asphalt], [rail, mats.rail]]) {
+        for (const [pos, mat, col] of [[groundPos, mats.ground, groundCol], [asphalt, mats.asphalt], [rail, mats.rail], [bank, mats.bank, bankCol]]) {
             if (!pos.length) continue;
             const g = new THREE.BufferGeometry();
             g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -511,16 +569,19 @@
                 const period = r.dash[0] + r.dash[1];
                 const samples = resample(r.pts, MAP_STEP);
                 const prof = T.profiles && T.profiles[ri];
-                for (const { o, dashed } of lines) {
+                for (const { o: o0, dashed } of lines) {
+                    // Where the asphalt narrows between buildings, the lines close in with it
                     let k = 0;
-                    const height = (p, x, y) => {
-                        if (!prof) return ground(x, y);
-                        const at = profileAt(ri, p.s, k);
-                        k = at.k;
-                        return at.h;
+                    const at = p => {
+                        if (!prof) return null;
+                        const q = profileAt(ri, p.s, k);
+                        k = q.k;
+                        // From [-hw, hw] to [-wr, wl]: the edge lines on the asphalt's edges, the lanes between them
+                        return { h: q.h, o: -q.wr + (o0 + prof.hw) / (2 * prof.hw) * (q.wl + q.wr) };
                     };
                     for (let i = 0; i < samples.length - 1; i++) {
                         const a = samples[i], b = samples[i + 1];
+                        const qa = at(a), qb = at(b), oa = qa ? qa.o : o0, ob = qb ? qb.o : o0, o = (oa + ob) / 2;
                         const mx = (a.x + b.x) / 2 + (a.nx + b.nx) / 2 * o, my = (a.y + b.y) / 2 + (a.ny + b.ny) / 2 * o;
                         const far = Math.hypot(mx - cx, my - cy);
                         if (far > MAP_RANGE) continue;
@@ -529,8 +590,8 @@
                         if (insideOther(ri, mx, my)) continue;
                         // Real 15 cm lines (plus their soft sides), wider far away so they stay visible
                         const w = Math.max(0.22, far * 0.005) / 2;
-                        const ax = a.x + a.nx * o, ay = a.y + a.ny * o, bx = b.x + b.nx * o, by = b.y + b.ny * o;
-                        const ha = y0 + height(a, ax, ay) * u, hb = y0 + height(b, bx, by) * u;
+                        const ax = a.x + a.nx * oa, ay = a.y + a.ny * oa, bx = b.x + b.nx * ob, by = b.y + b.ny * ob;
+                        const ha = y0 + (qa ? qa.h : ground(ax, ay)) * u, hb = y0 + (qb ? qb.h : ground(bx, by)) * u;
                         const a0x = ax - a.nx * w, a0y = ay - a.ny * w, a1x = ax + a.nx * w, a1y = ay + a.ny * w;
                         const b0x = bx - b.nx * w, b0y = by - b.ny * w, b1x = bx + b.nx * w, b1y = by + b.ny * w;
                         vertex(a0x, a0y, ha); vertex(a1x, a1y, ha); vertex(b1x, b1y, hb);

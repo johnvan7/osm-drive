@@ -253,7 +253,7 @@
         // Ahead in the gear's direction: a bounce off a wall doesn't swing the scene round
         const b = (free.gear === 'R' ? free.brg + 180 : free.brg) * RAD;
         const cx = free.x + Math.sin(b) * LEAD, cy = free.y + Math.cos(b) * LEAD;
-        const dem = window.Terrain ? Terrain.version : 0;
+        const dem = (window.Terrain ? Terrain.version : 0) + (window.Fuel ? Fuel.version * 1e6 : 0);
         if (Math.hypot(cx - built.x, cy - built.y) < REBUILD && OsmMatch.edges.length === built.edges && dem === built.dem && isDarkTheme === built.dark) return null;
         Object.assign(built, { x: cx, y: cy, edges: OsmMatch.edges.length, dem, dark: isDarkTheme });
         const sc = (res.matched && OsmMatch.scene(nav)) || { car: { offset: 0 }, features: [] };
@@ -412,7 +412,7 @@
         }
         if (!best) { info.textContent = 'Nessuna strada qui'; return false; }
         Object.assign(free, { on: true, x: best.x, y: best.y, brg: best.brg, v: 0, steer: 0, vz: 0, pitch: 0, roll: 0, air: false, t: 0, nextFix: 0, last: performance.now(), nx: 0, ny: 0,
-            gear: 'D', gearN: 1, rpm: IDLE, shiftUntil: 0, thr: 0, brk: 0, dive: 0, waitGear: 0, road: null, roadAt: 0, offSince: 0 });
+            gear: 'D', gearN: 1, rpm: IDLE, shiftUntil: 0, thr: 0, brk: 0, dive: 0, waitGear: 0, road: null, roadAt: 0, offSince: 0, off: 0, odo: 0 });
         // Below everything: the first frame sets it on the ground
         free.z = -1e9;
         built.x = NaN;
@@ -443,22 +443,34 @@
             free.gear = free.gear === 'D' ? 'R' : 'D';
             free.waitGear = 0;
         }
-        const gas = free.gear === 'D' ? up : down, brake = free.gear === 'D' ? down : up;
+        // An empty tank: the engine has stopped, the pedal does nothing
+        const dry = window.Fuel && Fuel.empty;
+        const gas = !dry && (free.gear === 'D' ? up : down), brake = free.gear === 'D' ? down : up;
         // Pedals take a moment: about 0.3 s to full throttle, 0.2 s to full brake
         const ramp = (x, on, upS, downS) => Math.min(1, Math.max(0, x + (on ? dt / upS : -dt / downS)));
         free.thr = ramp(free.thr, gas, 0.3, 0.15);
         free.brk = ramp(free.brk, brake, 0.2, 0.1);
+
+        // Share of the wheels off the asphalt, on grass, earth or gravel: they slip, drag and grip less
+        if (window.Terrain && Terrain.onRoad) {
+            const b = free.brg * RAD, fx = Math.sin(b), fy = Math.cos(b), half = WHEELBASE / 2, tr = TRACK / 2;
+            let offWheels = 0;
+            for (const [al, le] of [[half, tr], [half, -tr], [-half, tr], [-half, -tr]]) if (!Terrain.onRoad(free.x + fx * al - fy * le, free.y + fy * al + fx * le)) offWheels++;
+            free.off += (offWheels / 4 - free.off) * (1 - Math.exp(-dt / 0.1));
+        }
+        const off = free.off;
 
         let a = 0;
         if (!free.air) {
             const sp0 = Math.abs(free.v);
             gearbox(dt, now);
             const shifting = now < free.shiftUntil ? 0.2 : 1;
-            a += free.gear === 'D' ? free.thr * GEARS[free.gearN - 1].a * torque(free.rpm) * shifting : -free.thr * 2 * Math.max(0, 1 - sp0 / 4.2);
-            // Rolling resistance, air drag and, off the throttle, the engine holding the car back
-            const resist = 0.15 + 0.00042 * sp0 * sp0 + (free.thr < 0.05 && sp0 > 2 ? 0.5 + sp0 * 0.012 : 0);
-            // Brakes up to the tyres' grip, about 8.5 m/s² on dry asphalt (ABS keeps steering)
-            a -= sign * (resist + free.brk * 8.5);
+            a += (free.gear === 'D' ? free.thr * GEARS[free.gearN - 1].a * torque(free.rpm) * shifting : -free.thr * 2 * Math.max(0, 1 - sp0 / 4.2)) * (1 - 0.4 * off);
+            // Rolling resistance, air drag and, off the throttle, the engine holding the car back; off the road the
+            // ground drags far more, which keeps the car under about 60 km/h there
+            const resist = 0.15 + 0.00042 * sp0 * sp0 + (free.thr < 0.05 && sp0 > 2 ? 0.5 + sp0 * 0.012 : 0) + off * (0.35 + 0.0026 * sp0 * sp0);
+            // Brakes up to the tyres' grip, about 8.5 m/s² on dry asphalt (ABS keeps steering), 5 on grass
+            a -= sign * (resist + free.brk * (8.5 - 3.5 * off));
             a -= 9.81 * Math.sin(free.pitch);
         } else {
             a -= sign * 0.00042 * free.v * free.v;
@@ -473,9 +485,9 @@
         // The body dives under braking and squats under throttle, about 0.25° per m/s²
         free.dive += (-0.0045 * (a + 9.81 * Math.sin(free.pitch)) - free.dive) * (1 - Math.exp(-dt / 0.15));
 
-        // Steering is limited to about 6 m/s² sideways, and centres itself
+        // Steering is limited to about 6 m/s² sideways (3.5 off the road), and centres itself
         const sp = Math.abs(free.v);
-        const maxSteer = Math.min(0.6, Math.atan(6 * WHEELBASE / Math.max(1, sp * sp)));
+        const maxSteer = Math.min(0.6, Math.atan((6 - 2.5 * off) * WHEELBASE / Math.max(1, sp * sp)));
         const target = (left ? -1 : right ? 1 : 0) * maxSteer;
         const rate = target === 0 ? 2.5 : 1.2;
         free.steer += Math.max(-rate * dt, Math.min(rate * dt, target - free.steer));
@@ -490,6 +502,8 @@
             Object.assign(free, { x: px, y: py, brg: pb, v: -0.2 * free.v, thr: 0, steer: 0 });
             if (impact > 1 && window.Engine) Engine.crash(impact);
         }
+        // And the other players' cars
+        if (window.Net) Net.collide(free, dt);
 
         // The body rests on its four wheels: pushed up by the ground, never into it; when the ground drops away faster
         // than gravity pulls, it flies
@@ -510,14 +524,19 @@
                 free.pitch += (Math.atan((fl + fr - rl - rr) / 2 / WHEELBASE) - free.pitch) * k;
                 free.roll += (-Math.atan((fl + rl - fr - rr) / 2 / TRACK) - free.roll) * k;
             }
-            Terrain.car = { x: free.x, y: free.y, brg: free.brg, z: free.z, pitch: free.pitch + free.dive, roll: free.roll };
+            // Off the road the body shakes on the uneven ground, more the faster it goes
+            free.odo += sp * dt;
+            const shake = free.air ? 0 : off * Math.min(1, sp / 8) * 0.012, o = free.odo;
+            const bumpP = shake * (Math.sin(o * 2.3) + 0.6 * Math.sin(o * 5.1 + 1)), bumpR = shake * (Math.sin(o * 3.1 + 2) + 0.5 * Math.sin(o * 6.7));
+            Terrain.car = { x: free.x, y: free.y, brg: free.brg, z: free.z, pitch: free.pitch + free.dive + bumpP, roll: free.roll + bumpR };
         }
         const kmh = Math.round(sp * 3.6);
         updateSpeed(kmh, kmh);
         if (now - free.roadAt > 250) {
             free.roadAt = now;
             free.road = roadUnder(free.x, free.y);
-            if (free.road) free.offSince = 0;
+            // A fuel station's forecourt is not off the road
+            if (free.road || (window.Fuel && Fuel.padAt(free.x, free.y, 1))) free.offSince = 0;
             else if (!free.offSince) free.offSince = now;
         }
 
@@ -600,6 +619,8 @@
         if (window.Terrain) Terrain.reset();
         if (window.Buildings) Buildings.reset();
         if (window.World) World.reset();
+        if (window.Pois) Pois.reset();
+        if (window.Fuel) Fuel.reset();
         OsmMatch.project(lat, lon);
     }
 

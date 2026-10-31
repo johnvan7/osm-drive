@@ -10,7 +10,8 @@ const OsmOnline = (() => {
     let url = null;
     const buildings = new Map();   // tile key -> [{ rings: [[[lat, lon]...]...], h, min, colour }]
     const tolls = [];              // motorway toll booths: { lat, lon, name }
-    const areas = new Map();       // tile key -> { water, waterways, cover, rails, fuel }
+    const areas = new Map();       // tile key -> { water, waterways, cover, rails, fuel, pois }
+    const fuelSeen = new Set();
 
     async function init() {
         url = (await (await fetch('https://tiles.openfreemap.org/planet')).json()).tiles[0];
@@ -219,9 +220,9 @@ const OsmOnline = (() => {
         }
         buildings.set(key, list);
 
-        // The rest of the world: water, land cover, railways, fuel stations, in lat/lon
+        // The rest of the world: water, land cover, railways, fuel stations, places of interest, in lat/lon
         const ll = (l, E2) => l.map(([x, y]) => toLL(x * E / E2, y * E / E2));
-        const area = { water: [], waterways: [], cover: [], rails: [], fuel: [] };
+        const area = { water: [], waterways: [], cover: [], rails: [], fuel: [], pois: [] };
         const each = (name, fn) => { const l = layers[name]; if (l) for (const f of l.features) fn(f, l.extent); };
         each('water', (f, E2) => {
             if (f.type === 3 && f.props.brunnel !== 'tunnel') for (const poly of polygons(geometry(f.geom))) area.water.push({ rings: poly.map(r => ll(r, E2)), cls: f.props.class });
@@ -247,7 +248,15 @@ const OsmOnline = (() => {
             for (const raw of geometry(f.geom)) for (const line of clipLine(raw, E2)) area.rails.push(ll(line, E2));
         });
         each('poi', (f, E2) => {
-            if (f.type === 1 && f.props.class === 'fuel') for (const p of geometry(f.geom)) { const [lat, lon] = ll(p, E2)[0]; area.fuel.push({ lat, lon, name: f.props.name || '' }); }
+            if (f.type !== 1) return;
+            for (const p of geometry(f.geom)) {
+                const [lat, lon] = ll(p, E2)[0];
+                // A station on a tile border is in both tiles: one is enough
+                const fk = lat.toFixed(5) + ',' + lon.toFixed(5);
+                if (f.props.class === 'fuel' && !fuelSeen.has(fk)) { fuelSeen.add(fk); area.fuel.push({ lat, lon, name: f.props.name || '' }); }
+                // Only the kinds the labels can show: a city tile has thousands of gates and bollards
+                if (!window.Pois || Pois.wants(f.props)) area.pois.push({ lat, lon, p: f.props });
+            }
         });
         areas.set(key, area);
         return { tags, ways, cams: [], feats: [] };
@@ -374,6 +383,7 @@ const OsmOnline = (() => {
         buildings.clear();
         areas.clear();
         tolls.length = 0;
+        fuelSeen.clear();
         cells.clear();
         queue.length = 0;
         laneSegs.clear();

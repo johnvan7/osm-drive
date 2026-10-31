@@ -1,5 +1,5 @@
 // The rest of the world for the simulator, per vector tile around the car: rivers and lakes, land cover for the
-// ground's colour, trees, railways, street lamps lit at night and fuel stations
+// ground's colour, trees, railways and street lamps lit at night
 (() => {
     const COVER_ORDER = ['wood', 'park', 'grass', 'farm', 'sand', 'rock', 'urban'];
     const CELL = 200;
@@ -183,34 +183,29 @@
         }
         add(rail.mesh(mats.solid));
 
-        // Fuel stations: canopy with a red fascia on pillars, two pump islands
-        const fuel = builder();
-        for (const s of area.fuel) {
-            const p = OsmMatch.project(s.lat, s.lon), r = nearestRoad(p.x, p.y, 60);
-            const b = (r ? r.e.brg : 0) * Math.PI / 180, fx = Math.sin(b), fy = Math.cos(b);
-            // On a forecourt slab as high as the highest ground under it, deep enough to hide any slope
-            const corners = [[-8, -10], [8, -10], [-8, 10], [8, 10], [0, 0]].map(([a, d]) => dem(p.x + fy * a + fx * d, p.y - fx * a + fy * d));
-            const h = Math.max(ground(p.x, p.y), ...corners) + 0.15;
-            fuel.box(p.x, p.y, fx, fy, 0, 0, 16, 20, h - 3, 3, 0xbfc3c8);
-            fuel.box(p.x, p.y, fx, fy, 0, 0, 9, 14, h + 4.6, 0.7, 0xf2f2f2);
-            for (const side of [-1, 1]) fuel.box(p.x, p.y, fx, fy, side * 4.55, 0, 0.12, 14.2, h + 4.4, 0.9, 0xd32f2f);
-            for (const [a, d] of [[-3.5, -5.5], [3.5, -5.5], [-3.5, 5.5], [3.5, 5.5]]) fuel.box(p.x, p.y, fx, fy, a, d, 0.35, 0.35, h, 4.6, 0xd0d4da);
-            for (const a of [-2, 2]) {
-                fuel.box(p.x, p.y, fx, fy, a, 0, 1.4, 6, h, 0.2, 0xb8bcc2);
-                for (const d of [-1.5, 1.5]) fuel.box(p.x, p.y, fx, fy, a, d, 0.6, 0.9, h + 0.2, 1.8, 0xe8e8e8);
-            }
-        }
-        add(fuel.mesh(mats.lit));
+        // Fuel stations are drawn by Fuel, once they stand beside their road
 
-        // Street lamps on the right of urban roads every 30 m, with a pool of light at night
+        // Street lamps on the right of urban roads every 30 m, with a pool of light at night. Never on another road, in
+        // the mouth of a junction or in a building: where the street is narrow they stand at the kerb, or not at all
+        const onOtherRoad = (e, x, y) => OsmMatch.edgesNear(x, y, 12).some(o => {
+            if (o.way === e.way) return false;
+            const dx = o.bx - o.ax, dy = o.by - o.ay, l2 = dx * dx + dy * dy || 1e-9;
+            const t = Math.max(0, Math.min(1, ((x - o.ax) * dx + (y - o.ay) * dy) / l2));
+            const lo = OsmMatch.laneInfo(o);
+            return Math.hypot(x - o.ax - dx * t, y - o.ay - dy * t) < (lo.fwd + lo.back) * lo.laneW / 2 + 1.5;
+        });
         const lampPos = [];
         for (const e of OsmMatch.edges) {
             if (!e.urban || typeof e.way !== 'string' || !e.way.startsWith(key + ':') || /service/.test(e.tags.highway)) continue;
-            const l = OsmMatch.laneInfo(e), off = (l.fwd + l.back) * l.laneW / 2 + 0.8;
+            const l = OsmMatch.laneInfo(e), hw = (l.fwd + l.back) * l.laneW / 2;
             const fx = (e.bx - e.ax) / e.len, fy = (e.by - e.ay) / e.len;
             for (let s = 15; s < e.len && lampPos.length < 700; s += 30) {
-                const x = e.ax + fx * s + fy * off, y = e.ay + fy * s - fx * off;
-                lampPos.push({ x, y, fx, fy, h: ground(x - fy * off, y + fx * off) });
+                const cx = e.ax + fx * s, cy = e.ay + fy * s;
+                const off = [hw + 0.8, 2.2].find(o => o <= hw + 0.8 && !Buildings.hit(cx + fy * o, cy - fx * o) && !Buildings.hit(cx + fy * (o + 0.6), cy - fx * (o + 0.6)));
+                if (off === undefined) continue;
+                const x = cx + fy * off, y = cy - fx * off;
+                if (onOtherRoad(e, x, y)) continue;
+                lampPos.push({ x, y, fx, fy, h: ground(cx, cy) });
             }
         }
         const lamp = builder(), heads = builder();

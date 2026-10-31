@@ -1,0 +1,16 @@
+# One Worker for the whole game: the static site from the repository root, and the realtime world on /ws
+name = "osm-drive"
+main = "server/index.js"
+compatibility_date = "2025-10-01"
+
+[assets]
+directory = "."
+
+[[durable_objects.bindings]]
+name = "WORLD"
+class_name = "World"
+
+# The free plan needs SQLite-backed Durable Objects
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["World"]

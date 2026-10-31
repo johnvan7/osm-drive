@@ -54,10 +54,88 @@
         return t;
     }
 
+    // A link that brings friends to about where the car is (to ~100 m), with the town in the message
+    async function share() {
+        const f = osmSim.free;
+        const [lat, lon] = f.on ? (ll => [ll.lat, ll.lon])(OsmMatch.unproject(f.x, f.y)) : big.spawn || [START.lat, START.lon];
+        const link = location.origin + location.pathname + '?at=' + lat.toFixed(3) + ',' + lon.toFixed(3);
+        const place = f.on ? town.name : big.spawn ? big.town : '';
+        const text = place ? tr('inviteTextAt', place) : tr('inviteText');
+        if (navigator.share && touch) {
+            try { await navigator.share({ title: 'OSM Drive', text, url: link }); return; } catch (err) { if (err && err.name === 'AbortError') return; }
+        }
+        try {
+            await navigator.clipboard.writeText(text + ' ' + link);
+            flash(tr('linkCopied'));
+        } catch (err) {
+            window.prompt(tr('invite'), text + ' ' + link);
+        }
+    }
+
+    // Opened from a friend's link: the map there, the start ready on the nearest road
+    function invited() {
+        const q = new URLSearchParams(location.search), at = (q.get('at') || '').split(',').map(Number);
+        if (at.length !== 2 || !(Math.abs(at[0]) <= 85 && Math.abs(at[1]) <= 180)) return false;
+        jump(at[0], at[1]);
+        big.zoom = 16;
+        // Not again at the next reload
+        q.delete('at');
+        history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash);
+        return true;
+    }
+
+    // The last place, for the map after a reload: the car while driving, else the start chosen
+    const KEY_PLACE = 'osm-drive-place';
+    let placeAt = 0;
+    function savePlace([lat, lon]) {
+        try { localStorage.setItem(KEY_PLACE, lat.toFixed(5) + ',' + lon.toFixed(5)); } catch (err) { /* storage blocked */ }
+    }
+    function carPlace(now) {
+        const f = osmSim.free;
+        if (!f.on || now - placeAt < 5000) return;
+        placeAt = now;
+        const ll = OsmMatch.unproject(f.x, f.y);
+        savePlace([ll.lat, ll.lon]);
+    }
+    function lastPlace() {
+        let at = [];
+        try { at = (localStorage.getItem(KEY_PLACE) || '').split(',').map(Number); } catch (err) { /* storage blocked */ }
+        if (at.length !== 2 || !(Math.abs(at[0]) <= 85 && Math.abs(at[1]) <= 180)) return false;
+        jump(at[0], at[1]);
+        big.zoom = 16;
+        return true;
+    }
+
+    // The player's name, asked before the first drive online; false when closed without one
+    function askName() {
+        return new Promise(resolve => {
+            const veil = el('div', 'position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center');
+            const card = el('div', CARD + ';padding:18px;width:min(340px, calc(100% - 40px));box-sizing:border-box;display:flex;flex-direction:column;gap:10px');
+            const input = el('input', 'width:100%;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.18);'
+                + 'background:rgba(255,255,255,.08);color:#fff;font:16px system-ui,sans-serif;outline:none');
+            input.placeholder = tr('namePlaceholder');
+            input.maxLength = 20;
+            const go = el('button', BTN + ';background:#3e8bff', tr('letsGo'));
+            const alone = el('button', 'background:transparent;border:0;color:#fff;opacity:.7;font:13px system-ui,sans-serif;cursor:pointer;padding:4px', tr('playAlone'));
+            card.append(el('div', 'font-size:18px;font-weight:700', tr('yourName')), el('div', 'font-size:13px;opacity:.7', tr('nameHint')), input, go, alone);
+            veil.appendChild(card);
+            document.body.appendChild(veil);
+            setTimeout(() => input.focus(), 50);
+            const done = ok => { veil.remove(); resolve(ok); };
+            go.onclick = () => {
+                if (!input.value.trim()) { input.focus(); return; }
+                Net.name = input.value;
+                done(true);
+            };
+            alone.onclick = () => { Net.on = false; done(true); };
+            input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') go.onclick(); if (e.key === 'Escape') done(false); });
+        });
+    }
+
     // Language menu; choosing reloads the page in the new language
     function languagePicker(css) {
         const row = el('label', 'display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;opacity:.9;' + css);
-        const sel = el('select', 'background:#1b2028;color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:5px 6px;font:13px system-ui,sans-serif;cursor:pointer');
+        const sel = el('select', 'min-width:0;max-width:60%;background:#1b2028;color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:5px 6px;font:13px system-ui,sans-serif;cursor:pointer');
         for (const [code, label] of Object.entries(I18n.langs)) {
             const o = el('option', '', label);
             o.value = code;
@@ -88,7 +166,7 @@
             el('div', 'margin-top:10px;opacity:.65;font-size:12px', tr(touch ? 'hintTouch' : 'hintMouse')));
         big.box.appendChild(side);
 
-        const zoom = el('div', 'position:absolute;right:20px;top:20px;display:flex;flex-direction:column;gap:8px');
+        const zoom = el('div', 'position:absolute;right:20px;top:20px;display:flex;flex-direction:column;align-items:flex-end;gap:8px');
         for (const [label, d] of [['+', 1], ['\u2212', -1]]) {
             const b = el('button', CARD + ';width:44px;height:44px;border:0;font-size:24px;cursor:pointer', label);
             b.onclick = e => { e.stopPropagation(); zoomAt(big.canvas.clientWidth / 2, big.canvas.clientHeight / 2, d); };
@@ -106,6 +184,9 @@
         big.nav.disabled = true;
         big.bar.append(big.msg, big.nav, big.go, big.close);
         big.box.appendChild(big.bar);
+        // How many are playing, under the zoom buttons
+        big.players = el('div', CARD + ';padding:6px 10px;font-size:12px;font-weight:600;display:none;pointer-events:none;white-space:nowrap;align-self:flex-end');
+        zoom.appendChild(big.players);
         big.credits = el('div', 'position:absolute;right:10px;bottom:6px;font-size:11px;opacity:.6;color:#fff;pointer-events:none', CREDITS);
         big.box.appendChild(big.credits);
         document.body.appendChild(big.box);
@@ -127,6 +208,8 @@
         big.nav.onclick = () => navigate(big.spawn, big.label);
         big.go.onclick = async () => {
             Engine.start();
+            if (Net.on && !Net.name && !await askName()) return;
+            Fuel.fill();
             if (touch) fullscreen(true);
             closeMap(true);
             if (!await osmSim.startFree({ lat: big.spawn[0], lon: big.spawn[1] })) {
@@ -240,8 +323,17 @@
             const tap = big.tap;
             big.tap = null;
             if (!tap || !tap.ok || e.type === 'pointercancel') return;
+            // A player or a group of players first: near that player, or closer in on the group
+            const q = at(e), hit = (big.hits || []).filter(h => Math.hypot(h.x - q.x, h.y - q.y) < h.r).sort((a, b) => Math.hypot(a.x - q.x, a.y - q.y) - Math.hypot(b.x - q.x, b.y - q.y))[0];
+            if (hit && hit.group) { zoomAt(hit.x, hit.y, 2.5); return; }
+            if (hit && hit.p) {
+                jump(hit.p.lat, hit.p.lon, tr('nearPlayer', hit.p.name || 'Pilota'));
+                big.zoom = Math.max(big.zoom, 15);
+                if (osmSim.free.on) big.go.textContent = tr('join');
+                return;
+            }
             // Only roads can be picked: the point moves onto the nearest one in reach
-            const q = at(e), p = snapToRoad(q.x, q.y);
+            const p = snapToRoad(q.x, q.y);
             if (!p) {
                 big.msg.textContent = tr(touch ? 'tapRoad' : 'clickRoad');
                 return;
@@ -289,13 +381,17 @@
 
     async function setSpawn(ll, label) {
         big.spawn = ll;
+        if (!osmSim.free.on) savePlace(ll);
         big.label = label || '';
         big.go.disabled = big.nav.disabled = false;
         big.dirty = true;
         big.msg.textContent = label || tr('pointChosen');
-        if (label) return;
+        // The town too, for an invite from here
+        big.town = '';
         const p = await reverse(ll[0], ll[1]);
-        if (p && big.spawn === ll) big.msg.textContent = big.label = [p.street || p.name, p.city].filter(Boolean).join(', ');
+        if (!p || big.spawn !== ll) return;
+        big.town = townOf(p);
+        if (!label) big.msg.textContent = big.label = [p.street || p.name, p.city].filter(Boolean).join(', ');
     }
 
     function jump(lat, lon, label) {
@@ -480,11 +576,79 @@
                 g.fillText('\u20ac', sx, sy + 0.5);
             }
         }
+        // Other players, for the view shown: groups with how many far out, each one with its name and heading close up.
+        // What is drawn is remembered for a tap
+        const [vn, vw] = latLon(big.cx - W / 2 / scale, big.cy - H / 2 / scale), [vs, ve] = latLon(big.cx + W / 2 / scale, big.cy + H / 2 / scale);
+        Net.mapView([vs, vw, vn, ve], big.zoom);
+        const items = Net.mapItems();
+        big.hits = [];
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        for (const c of items.c) {
+            const [sx, sy] = toScreen(c.lat, c.lon);
+            if (sx < -30 || sy < -30 || sx > W + 30 || sy > H + 30) continue;
+            if (c.n === 1 && c.id) {
+                g.fillStyle = c.colour;
+                g.strokeStyle = '#0e1116';
+                g.lineWidth = 2;
+                g.beginPath();
+                g.arc(sx, sy, 6, 0, 7);
+                g.fill();
+                g.stroke();
+                big.hits.push({ x: sx, y: sy, r: 14, p: c });
+                continue;
+            }
+            const r = 11 + 4 * Math.log2(c.n);
+            g.fillStyle = 'rgba(62,139,255,.85)';
+            g.strokeStyle = 'rgba(255,255,255,.9)';
+            g.lineWidth = 2;
+            g.beginPath();
+            g.arc(sx, sy, r, 0, 7);
+            g.fill();
+            g.stroke();
+            g.fillStyle = '#fff';
+            g.font = `700 ${c.n > 99 ? 11 : 13}px system-ui,sans-serif`;
+            g.fillText(String(c.n), sx, sy + 0.5);
+            big.hits.push({ x: sx, y: sy, r: r + 4, group: c });
+        }
+        // Arrows first, then the names over them; a name that would cover a label already written is left out (the
+        // arrow stays, and a tap tells who)
+        const shown = items.p.map(p => [p, ...toScreen(p.lat, p.lon)]).filter(([, sx, sy]) => sx > -30 && sy > -30 && sx < W + 30 && sy < H + 30);
+        for (const [p, sx, sy] of shown) {
+            g.save();
+            g.translate(sx, sy);
+            g.rotate(p.b * RAD);
+            g.beginPath();
+            g.moveTo(0, -11);
+            g.lineTo(7, 7);
+            g.lineTo(0, 3);
+            g.lineTo(-7, 7);
+            g.closePath();
+            g.fillStyle = p.colour;
+            g.strokeStyle = '#0e1116';
+            g.lineWidth = 2;
+            g.fill();
+            g.stroke();
+            g.restore();
+            big.hits.push({ x: sx, y: sy, r: 16, p });
+        }
+        g.font = '600 12px system-ui,sans-serif';
+        g.textAlign = 'left';
+        for (const [p, sx, sy] of shown) if (free(sx + 11, sy - 8, g.measureText(p.name).width, 16)) halo(g, p.name, sx + 11, sy, '#fff');
+        g.textAlign = 'center';
+        if (items.moving) big.dirty = true;
+        if (big.players) {
+            const t = Net.on && Net.status === 'on' ? tr('playing', Net.total) : '';
+            if (big.players.textContent !== t) big.players.textContent = t;
+            big.players.style.display = t ? 'block' : 'none';
+        }
         if (nav.on) {
             g.strokeStyle = '#3e8bff';
             g.lineWidth = 6;
             g.beginPath();
-            nav.ll.forEach((p, i) => { const [sx, sy] = toScreen(p[0], p[1]); i ? g.lineTo(sx, sy) : g.moveTo(sx, sy); });
+            // Only what is still ahead, from the car's place on the route
+            const ahead = [nav.cur, ...nav.pts.slice(nav.cur.i + 1)];
+            ahead.forEach((p, i) => { const q = OsmMatch.unproject(p.x, p.y), [sx, sy] = toScreen(q.lat, q.lon); i ? g.lineTo(sx, sy) : g.moveTo(sx, sy); });
             g.stroke();
             const [dx, dy] = toScreen(nav.dest[0], nav.dest[1]);
             g.fillStyle = '#1f8a4c';
@@ -566,6 +730,7 @@
         }
         big.open = true;
         big.dirty = true;
+        Net.mapOpen = true;
         big.box.style.display = 'block';
         big.close.style.display = f.on ? '' : 'none';
         // Before a drive there is one thing to do; while driving, going somewhere comes first and starting over second
@@ -581,6 +746,7 @@
     function closeMap(force) {
         if (!osmSim.free.on && !force) return;
         big.open = false;
+        Net.mapOpen = false;
         big.box.style.display = 'none';
         osmSim.free.paused = false;
     }
@@ -640,11 +806,32 @@
                 g.stroke();
             }
         }
+        // Other players near: dots in their colour
+        for (const p of Net.players()) {
+            if (!p.near) continue;
+            const [x, y] = P(p.x, p.y);
+            if (Math.hypot(x - R, y - R) > R - 6 * dpr) continue;
+            g.fillStyle = p.colour;
+            g.strokeStyle = '#0e1116';
+            g.lineWidth = 2 * dpr;
+            g.beginPath();
+            g.arc(x, y, 5 * dpr, 0, 7);
+            g.fill();
+            g.stroke();
+        }
+        // Fuel stations: orange squares
+        if (Fuel.on) {
+            g.fillStyle = '#ff9f1a';
+            for (const { st } of Fuel.near(f.x, f.y, R / s * 1.42)) {
+                const [x, y] = P(st.x, st.y);
+                if (Math.hypot(x - R, y - R) < R - 6 * dpr) g.fillRect(x - 4 * dpr, y - 4 * dpr, 8 * dpr, 8 * dpr);
+            }
+        }
         if (nav.on) {
             g.strokeStyle = 'rgba(62,139,255,.9)';
             g.lineWidth = 5 * dpr;
             g.beginPath();
-            nav.pts.forEach((p, i) => { const [x, y] = P(p.x, p.y); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+            [nav.cur, ...nav.pts.slice(nav.cur.i + 1)].forEach((p, i) => { const [x, y] = P(p.x, p.y); i ? g.lineTo(x, y) : g.moveTo(x, y); });
             g.stroke();
         }
         arrow(g, R, R, 0, dpr);
@@ -678,8 +865,9 @@
         if (!f.on || now - town.at < 8000 || (town.at && Math.hypot(f.x - town.x, f.y - town.y) < 400)) return;
         Object.assign(town, { at: now, x: f.x, y: f.y });
         const ll = OsmMatch.unproject(f.x, f.y), p = await reverse(ll.lat, ll.lon);
-        if (p) town.name = p.city || (p.type === 'city' ? p.name : '') || p.county || '';
+        if (p) town.name = townOf(p);
     }
+    function townOf(p) { return p.city || (p.type === 'city' ? p.name : '') || p.county || ''; }
 
     let roadBox, backBtn;
     // Plain text with a shadow, no card: it informs without competing with the road
@@ -691,6 +879,147 @@
             + 'box-shadow:0 6px 24px rgba(0,0,0,.45)', tr('backToRoadKey'));
         backBtn.onclick = () => { backBtn.blur(); osmSim.backToRoad(); };
         document.body.appendChild(backBtn);
+
+        // Tank gauge in the bottom right corner, upright: F over ten segments over E, and a pump drawn under them.
+        // On phones the corner has the pedals: it stands above the throttle
+        fuelBox = el('div', 'position:fixed;right:18px;bottom:18px;z-index:400;display:none;flex-direction:column;align-items:center;gap:3px;'
+            + 'padding:7px 7px 6px;border-radius:10px;background:rgba(14,18,24,.6);box-shadow:0 4px 14px rgba(0,0,0,.35);'
+            + 'color:#fff;font:700 10px system-ui,sans-serif;letter-spacing:.5px;pointer-events:none');
+        fuelBox.append(el('div', 'opacity:.75', 'F'));
+        fuelSegs = [];
+        for (let k = 0; k < 10; k++) {
+            const seg = el('div', 'width:16px;height:6px;border-radius:2px;background:rgba(255,255,255,.16);transition:background .2s');
+            fuelSegs.unshift(seg);
+            fuelBox.appendChild(seg);
+        }
+        fuelBox.append(el('div', 'opacity:.75', 'E'),
+            el('div', 'margin-top:2px;line-height:0', '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                + '<path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 21h12"/><path d="M4 10h10"/>'
+                + '<path d="M14 8h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0V9l-3-3"/></svg>'));
+        document.body.appendChild(fuelBox);
+        // The trip distance moves left of the gauge
+        const style = document.createElement('style');
+        style.textContent = 'body.fuel-on #bottomBar{padding-right:70px}';
+        document.head.appendChild(style);
+        // On reserve: to the nearest station; dry: call for help
+        fuelBtn = el('button', BTN + ';position:fixed;left:50%;top:150px;transform:translateX(-50%);z-index:400;display:none;'
+            + 'box-shadow:0 6px 24px rgba(0,0,0,.45)');
+        fuelBtn.onclick = () => { fuelBtn.blur(); Fuel.empty ? rescue() : toStation(); };
+        document.body.appendChild(fuelBtn);
+        Fuel.onMessage = (key, ...args) => flash(tr(key, ...args));
+        Net.onMessage = (key, ...args) => flash(tr(key, ...args));
+        Net.onMap = () => { big.dirty = true; };
+        Fuel.onReserve = () => {
+            const f = osmSim.free, n = Fuel.near(f.x, f.y, 20000)[0];
+            flash(n ? tr('fuelReserve', fmtDist(n.d)) : tr('fuelReserveNone'));
+        };
+    }
+
+    let fuelBox, fuelSegs, fuelBtn, rescuing = false, netStatus;
+
+    // ================= Players near the car: a list =================
+    let peopleBtn, peopleVeil, peopleList, sideList;
+    const arrowSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M12 3l7 16-7-4-7 4z"/></svg>';
+
+    // The players near, nearest first: { name, colour, d (m), turn (deg from the car's heading, + right) }
+    function nearPlayers() {
+        const f = osmSim.free, travel = f.v < 0 ? (f.brg + 180) % 360 : f.brg;
+        return Net.players().filter(p => p.near).map(p => ({
+            ...p, d: Math.hypot(p.x - f.x, p.y - f.y), turn: OsmMatch.turnOf(travel, OsmMatch.bearing(f.x, f.y, p.x, p.y))
+        })).sort((a, b) => a.d - b.d);
+    }
+
+    const row = (p, big) => `<div style="display:flex;align-items:center;gap:8px;padding:${big ? '7px 4px' : '2px 0'}">`
+        + `<span style="flex:none;width:${big ? 12 : 9}px;height:${big ? 12 : 9}px;border-radius:50%;background:${p.colour};box-shadow:0 0 0 2px rgba(0,0,0,.5)"></span>`
+        + `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</span>`
+        + `<span style="flex:none;opacity:.8">${fmtDist(p.d)}</span>`
+        + `<span style="flex:none;display:inline-block;transform:rotate(${Math.round(p.turn)}deg);line-height:0">${arrowSvg}</span></div>`;
+
+    function buildPeople() {
+        // The list in a small window, like the settings
+        peopleVeil = el('div', 'position:fixed;inset:0;z-index:2500;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center');
+        const card = el('div', CARD + ';width:min(320px, calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;box-sizing:border-box;padding:12px;font-size:14px');
+        const head = el('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px');
+        const close = el('button', 'background:transparent;border:0;color:#fff;font-size:22px;line-height:1;cursor:pointer;opacity:.75;padding:2px 6px', '\u2715');
+        close.title = close.ariaLabel = tr('close');
+        close.onclick = () => showPeople(false);
+        head.append(el('div', 'font-size:17px;font-weight:700', tr('nearbyPlayers')), close);
+        peopleList = el('div', '');
+        card.append(head, peopleList);
+        peopleVeil.appendChild(card);
+        peopleVeil.addEventListener('pointerdown', e => { if (e.target === peopleVeil) showPeople(false); });
+        addEventListener('keydown', e => { if (e.code === 'Escape' && peopleVeil.style.display !== 'none') { e.stopPropagation(); showPeople(false); } }, true);
+        document.body.appendChild(peopleVeil);
+        // On computers the nearest four stay on screen, under the buttons
+        sideList = el('div', QUIET + ';position:fixed;right:16px;top:66px;z-index:400;width:210px;font-size:13px;display:none');
+        if (!touch) document.body.appendChild(sideList);
+    }
+
+    function showPeople(on) {
+        peopleVeil.style.display = on ? 'flex' : 'none';
+        if (on) drawPeople();
+    }
+
+    let peopleAt = 0;
+    function drawPeople(now = performance.now()) {
+        const f = osmSim.free, driving = f.on && !big.open && Net.on;
+        const list = driving ? nearPlayers() : [];
+        const listed = touch ? 0 : 4;
+        peopleBtn.style.display = list.length > listed ? 'flex' : 'none';
+        peopleBtn.lastChild.textContent = list.length;
+        if (!touch) {
+            sideList.style.display = list.length ? 'block' : 'none';
+            const html = list.slice(0, 4).map(p => row(p, false)).join('');
+            if (sideList.innerHTML !== html) sideList.innerHTML = html;
+        }
+        if (peopleVeil.style.display !== 'none' && now - peopleAt > 400) {
+            peopleAt = now;
+            const html = list.length ? list.map(p => row(p, true)).join('') : `<div style="opacity:.7;padding:8px 4px">${tr('nobodyNear')}</div>`;
+            if (peopleList.innerHTML !== html) peopleList.innerHTML = html;
+        }
+    }
+
+    // On computers the horn's key, for a few seconds after each start (phones have the button)
+    let hornHint = null, hornHintUntil = 0, wasDriving = false;
+    function drawHornHint(now) {
+        if (touch) return;
+        const f = osmSim.free;
+        if (!hornHint) {
+            hornHint = el('div', QUIET + ';position:fixed;left:16px;bottom:242px;z-index:400;font-size:13px;display:flex;align-items:center;gap:8px;opacity:0;transition:opacity .6s');
+            hornHint.innerHTML = '<span style="display:inline-block;min-width:22px;padding:2px 6px;box-sizing:border-box;text-align:center;border:1.5px solid rgba(255,255,255,.85);border-radius:5px;font-weight:700;text-shadow:none;background:rgba(14,18,24,.6)">H</span>'
+                + `<span>${escapeHtml(tr('horn'))}</span>`;
+            document.body.appendChild(hornHint);
+        }
+        if (f.on && !wasDriving) hornHintUntil = now + 10000;
+        wasDriving = f.on;
+        const show = f.on && !big.open && now < hornHintUntil ? '1' : '0';
+        if (hornHint.style.opacity !== show) hornHint.style.opacity = show;
+    }
+
+    // Navigation to the nearest station loaded; with none in reach, the roads a little farther out first
+    async function toStation() {
+        const f = osmSim.free;
+        let n = Fuel.near(f.x, f.y, 20000)[0];
+        if (!n) {
+            const ll = OsmMatch.unproject(f.x, f.y);
+            await OsmMatch.ensure(ll.lat, ll.lon, 2);
+            n = Fuel.near(f.x, f.y, 20000)[0];
+        }
+        if (!n) { flash(tr('fuelReserveNone')); return; }
+        navigate([n.st.lat, n.st.lon], n.st.name || tr('station'));
+    }
+
+    function rescue() {
+        if (rescuing) return;
+        rescuing = true;
+        flash(tr('rescueComing'));
+        setTimeout(() => {
+            rescuing = false;
+            const st = Fuel.rescue();
+            stopNav();
+            town.at = 0;
+            flash(st ? tr('rescued', st.name || tr('station')) : tr('rescuedCan'));
+        }, 2000);
     }
 
     function drawHud(now) {
@@ -701,6 +1030,9 @@
             if (t) {
                 const ref = t.ref ? `<span style="background:${/^A\d/.test(t.ref) ? '#1f8a4c' : '#2a6fdb'};border-radius:4px;padding:1px 6px;font-size:12px;margin-right:6px;text-shadow:none">${escapeHtml(t.ref)}</span>` : '';
                 line = ref + escapeHtml(t.name || (t.ref ? '' : tr('unnamedRoad')));
+            } else if (Fuel.padAt(f.x, f.y, 1)) {
+                const st = Fuel.padAt(f.x, f.y, 1);
+                line = escapeHtml(st.name || tr('station'));
             } else {
                 line = `<span style="opacity:.75">${tr('offRoad')}</span>`;
             }
@@ -709,6 +1041,25 @@
             if (roadBox.innerHTML !== html) roadBox.innerHTML = html;
         }
         backBtn.style.display = f.on && f.offSince && now - f.offSince > 4000 ? 'block' : 'none';
+        if (netStatus) {
+            const st = Net.status, txt = !Net.on ? tr('offlineAlone') : st === 'on' ? tr('onlineStatus', Net.nearCount, Net.total || 1) : st === 'connecting' ? tr('connecting') : tr('offline');
+            if (netStatus.textContent !== txt) netStatus.textContent = txt;
+        }
+        const showFuel = f.on && Fuel.on;
+        fuelBox.style.display = showFuel ? 'flex' : 'none';
+        document.body.classList.toggle('fuel-on', showFuel && !touch);
+        if (showFuel) {
+            // Lit segments, the last one blinking when nearly dry; green while filling
+            const lv = Fuel.level, lit = Math.ceil(lv * 10 - 0.001), blink = lv < 0.05 && Math.floor(now / 400) % 2;
+            const on = Fuel.filling ? '#3ccf7a' : lv < 0.05 ? '#ff5a4f' : lv < 0.15 ? '#ff9f1a' : '#f2f4f7';
+            fuelSegs.forEach((seg, k) => { seg.style.background = k < lit && !(blink && k === lit - 1) ? on : 'rgba(255,255,255,.16)'; });
+        }
+        // On reserve, unless already going to a station or filling up; dry and stopped, help
+        const dry = showFuel && Fuel.empty && Math.abs(f.v) < 0.5, low = showFuel && Fuel.level < 0.15 && !Fuel.filling && !nav.on;
+        fuelBtn.style.display = dry || low ? 'block' : 'none';
+        const label = tr(dry ? 'callRescue' : 'toStation');
+        if (fuelBtn.textContent !== label) fuelBtn.textContent = label;
+        fuelBtn.style.background = dry ? '#ff5a4f' : '#ff9f1a';
     }
 
     // ================= Day, night or as it is now there; headlights on at night =================
@@ -795,7 +1146,7 @@
     }
 
     // ================= Navigation to a destination, on the roads loaded along the way =================
-    const nav = { on: false, dest: null, label: '', pts: [], S: [], T: [], man: [], ll: [], i: 0, off: 0, arrivedAt: 0 };
+    const nav = { on: false, dest: null, label: '', pts: [], S: [], man: [], ways: new Map(), cur: null, i: 0, off: 0, routedAt: 0 };
     let navBox;
 
     async function navigate(dest, label) {
@@ -815,25 +1166,42 @@
         if (!route()) flash(tr('noRouteTo', nav.label));
     }
 
+    // The road the car is on and which way along it it is going: { e, fwd, x, y }, null off the roads
+    function onRoad(f) {
+        const travel = f.v < 0 ? (f.brg + 180) % 360 : f.brg;
+        let best = null;
+        for (const e of OsmMatch.edgesNear(f.x, f.y, 15)) {
+            const dx = e.bx - e.ax, dy = e.by - e.ay, l2 = dx * dx + dy * dy || 1e-9;
+            const t = Math.max(0, Math.min(1, ((f.x - e.ax) * dx + (f.y - e.ay) * dy) / l2));
+            const x = e.ax + dx * t, y = e.ay + dy * t, turn = Math.abs(OsmMatch.turnOf(travel, e.brg));
+            // Nearest, and along the heading where two roads meet
+            const score = Math.hypot(f.x - x, f.y - y) + Math.min(turn, 180 - turn) * 0.1;
+            if (!best || score < best.score) best = { e, fwd: turn < 90, x, y, score };
+        }
+        return best && best.score < 12 ? best : null;
+    }
+
+    // From the junction ahead of the car, the way it is going: no U-turn to a junction just passed
     function route() {
-        const f = osmSim.free, to = OsmMatch.project(nav.dest[0], nav.dest[1]);
-        const path = OsmMatch.route({ x: f.x, y: f.y }, to);
+        const f = osmSim.free, to = OsmMatch.project(nav.dest[0], nav.dest[1]), start = onRoad(f);
+        const node = start && (start.fwd ? { x: start.e.bx, y: start.e.by } : { x: start.e.ax, y: start.e.ay });
+        const path = OsmMatch.route(node || { x: f.x, y: f.y }, to);
         if (!path || !path.length) { stopNav(); return false; }
-        const pts = [], S = [0], T = [0];
-        const first = path[0];
-        pts.push(first.fwd ? { x: first.e.ax, y: first.e.ay } : { x: first.e.bx, y: first.e.by });
-        for (const st of path) {
+        const steps = start ? [{ e: start.e, fwd: start.fwd, part: true }, ...path] : path;
+        const pts = [], S = [0];
+        const first = steps[0];
+        pts.push(start ? { x: start.x, y: start.y } : first.fwd ? { x: first.e.ax, y: first.e.ay } : { x: first.e.bx, y: first.e.by });
+        for (const st of steps) {
             const p = st.fwd ? { x: st.e.bx, y: st.e.by } : { x: st.e.ax, y: st.e.ay };
-            const v = OsmMatch.roadSpeed(st.e) / 3.6;
+            const len = Math.hypot(p.x - pts[pts.length - 1].x, p.y - pts[pts.length - 1].y);
             st.s0 = S[S.length - 1];
             pts.push(p);
-            S.push(S[S.length - 1] + st.e.len);
-            T.push(T[T.length - 1] + st.e.len / v);
+            S.push(S[S.length - 1] + len);
         }
         // Turns at junctions, like a navigation app says them
         const man = [];
-        for (let k = 1; k < path.length; k++) {
-            const a = path[k - 1], b = path[k], id = a.fwd ? a.e.b : a.e.a;
+        for (let k = 1; k < steps.length; k++) {
+            const a = steps[k - 1], b = steps[k], id = a.fwd ? a.e.b : a.e.a;
             if ((OsmMatch.nodes.get(id) || { edges: [] }).edges.length < 3) continue;
             const turn = OsmMatch.turnOf(a.fwd ? a.e.brg : a.e.brg + 180, b.fwd ? b.e.brg : b.e.brg + 180);
             if (Math.abs(turn) < 25) continue;
@@ -841,7 +1209,9 @@
             man.push({ s: b.s0, dir: turn < 0 ? 1 : -1, angle: Math.round(Math.abs(turn)), text: name ? tr(turn < 0 ? 'turnLeftInto' : 'turnRightInto', name) : tr(turn < 0 ? 'turnLeft' : 'turnRight') });
         }
         man.push({ s: S[S.length - 1], dir: 0, angle: 0, text: tr('arriveAt', nav.label) });
-        Object.assign(nav, { on: true, pts, S, T, man, i: 0, off: 0, ll: pts.map(p => (q => [q.lat, q.lon])(OsmMatch.unproject(p.x, p.y))) });
+        // Each road of the route and the way it is driven, to notice a turn onto another road or a U-turn
+        const ways = new Map(steps.map(st => [st.e, st.fwd]));
+        Object.assign(nav, { on: true, pts, S, man, ways, i: 0, off: 0, routedAt: performance.now(), cur: { i: 0, x: pts[0].x, y: pts[0].y } });
         big.dirty = true;
         return true;
     }
@@ -868,16 +1238,25 @@
             if (d < best.d) best = { d, i, t };
         }
         nav.i = best.i;
+        const a = P[best.i], b = P[best.i + 1];
+        nav.cur = { i: best.i, x: a.x + (b.x - a.x) * best.t, y: a.y + (b.y - a.y) * best.t };
         const s = nav.S[best.i] + (nav.S[best.i + 1] - nav.S[best.i]) * best.t, left = nav.S[nav.S.length - 1] - s;
         if (left < 25) {
             stopNav();
             flash(tr('arrived', nav.label));
             return;
         }
-        // Off the route for a few seconds: a new route from here
-        if (best.d > 40) {
+        // Off the route: on a road that isn't part of it, along it the wrong way, or away from it. After a moment, so
+        // the GPS-like wobble at a junction doesn't trigger it, a new route from here
+        const here = onRoad(f), moving = Math.abs(f.v) > 2;
+        const off = best.d > 30 || (here && moving && (!nav.ways.has(here.e) ? best.d > 8 : nav.ways.get(here.e) !== here.fwd));
+        if (off) {
             nav.off = nav.off || now;
-            if (now - nav.off > 4000 && !route()) flash(tr('noRoute'));
+            if (now - nav.off > 1500 && now - nav.routedAt > 3000) {
+                if (route()) flash(tr('rerouted'));
+                else flash(tr('noRoute'));
+                return;
+            }
         } else nav.off = 0;
         const m = nav.man.find(m => m.s > s - 5), meters = Math.max(0, m.s - s);
         setUpcomingTurn(m.dir ? { dir: m.dir, angle: m.angle, meters: roundDist(meters) } : null);
@@ -885,9 +1264,7 @@
         const html = `<div style="font-size:24px;width:30px;text-align:center">${glyph}</div><div><div style="font-size:17px;font-weight:700">${fmtDist(meters)}</div>`
             + `<div style="font-size:12px;opacity:.85">${escapeHtml(m.text)}</div></div>`;
         if (navBox.firstChild.innerHTML !== html) navBox.firstChild.innerHTML = html;
-        const k = nav.T.length - 1, timeLeft = nav.T[k] - (nav.T[best.i] + (nav.T[best.i + 1] - nav.T[best.i]) * best.t);
-        const eta = new Date(Date.now() + timeLeft * 1000);
-        setTripInfo({ arrivalLabel: tr('arrival'), arrival: eta.toTimeString().slice(0, 5), remainingLabel: tr('distance'), remaining: fmtDist(left) });
+        setTripInfo({ remainingLabel: tr('distance'), remaining: fmtDist(left) });
     }
 
     // Short message in the middle of the screen
@@ -952,6 +1329,17 @@
         key('▶', 'ArrowRight', 'left:112px;bottom:24px;width:84px;height:84px;border-radius:50%');
         key('FRENO', 'ArrowDown', 'right:112px;bottom:24px;width:96px;height:70px;font-size:15px');
         key('GAS', 'ArrowUp', 'right:16px;bottom:24px;width:84px;height:110px;font-size:15px');
+        // The horn, above the brake: held down it sounds
+        const hornBtn = el('div', CARD + ';position:absolute;right:124px;bottom:108px;width:58px;height:58px;border-radius:50%;display:flex;align-items:center;justify-content:center;'
+            + 'pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none');
+        hornBtn.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            + '<path d="M3 10v4h3l6 4V6L6 10z" fill="#fff"/><path d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg>';
+        hornBtn.ariaLabel = tr('horn');
+        const hornIdle = hornBtn.style.background;
+        hornBtn.addEventListener('pointerdown', e => { e.preventDefault(); hornBtn.setPointerCapture(e.pointerId); hornBtn.style.background = 'rgba(62,139,255,.85)'; Net.horn(true); });
+        for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) hornBtn.addEventListener(ev, () => { hornBtn.style.background = hornIdle; Net.horn(false); });
+        hornBtn.addEventListener('contextmenu', e => e.preventDefault());
+        pad.appendChild(hornBtn);
         document.body.appendChild(pad);
         touchPad = pad;
         // The minimap and the gear move up, out of the thumbs' way
@@ -961,6 +1349,8 @@
         // Directions on the left under the minimap, off the road ahead
         Object.assign(navBox.style, { left: '16px', top: '156px' });
         backBtn.style.top = '172px';
+        fuelBtn.style.top = '226px';
+        Object.assign(fuelBox.style, { bottom: '150px', right: '36px' });
         backBtn.textContent = tr('backToRoad');
     }
 
@@ -972,7 +1362,10 @@
             mini.at = now;
             drawMini();
             drawHud(now);
+            drawPeople(now);
             updateTown(now);
+            carPlace(now);
+            drawHornHint(now);
             guide(now);
             if (touchPad) touchPad.style.display = osmSim.free.on && !big.open ? 'block' : 'none';
         }
@@ -982,36 +1375,67 @@
     }
 
     function buildOptions() {
-        // Only the map and a gear in the corner; the settings open under the gear
-        const box = el('div', CARD + ';position:fixed;right:16px;top:64px;z-index:460;padding:8px;display:none;flex-direction:column;gap:6px;font-size:13px');
-        const show = on => { box.style.display = on ? 'flex' : 'none'; gear.style.background = on ? '#3e8bff' : 'rgba(14,18,24,.88)'; };
-        const isOpen = () => box.style.display !== 'none';
+        // Only the map and a gear in the corner; the settings open in a window over the game, scrolling when the screen
+        // is short, in two columns on phones held sideways
+        const veil = el('div', 'position:fixed;inset:0;z-index:2500;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center');
+        const box = el('div', CARD + ';position:relative;width:min(340px, calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;box-sizing:border-box;'
+            + 'padding:12px;display:flex;flex-direction:column;gap:8px;font-size:13px');
+        const wide = innerHeight < 520 && innerWidth > 600;
+        if (wide) box.style.width = 'min(640px, calc(100% - 32px))';
+        const head = el('div', 'display:flex;justify-content:space-between;align-items:center;padding:0 2px 2px');
+        const close = el('button', 'background:transparent;border:0;color:#fff;font-size:22px;line-height:1;cursor:pointer;opacity:.75;padding:2px 6px', '\u2715');
+        close.title = close.ariaLabel = tr('close');
+        head.append(el('div', 'font-size:17px;font-weight:700', tr('options')), close);
+        const body = el('div', 'display:grid;gap:6px 14px;align-items:start;grid-template-columns:' + (wide ? '1fr 1fr' : '1fr'));
+        const col = () => el('div', 'display:flex;flex-direction:column;gap:6px;min-width:0');
+        let pausedBefore = false;
+        const show = on => {
+            if (on === isOpen()) return;
+            const f = osmSim.free;
+            // While it is open the keys belong to it, not to the car
+            if (on) { pausedBefore = f.paused; f.paused = true; f.keys.clear(); }
+            else f.paused = pausedBefore;
+            veil.style.display = on ? 'flex' : 'none';
+            gear.style.background = on ? '#3e8bff' : 'rgba(14,18,24,.88)';
+        };
+        const isOpen = () => veil.style.display !== 'none';
+        close.onclick = () => show(false);
         const seg = el('div', 'display:flex;background:rgba(255,255,255,.1);border-radius:9px;padding:2px');
         const modes = ['day', 'night', 'auto'].map(m => [m, tr(m)]).map(([m, label]) => {
-            const b = el('button', 'flex:1;border:0;border-radius:7px;padding:6px 9px;color:#fff;font:13px system-ui,sans-serif;cursor:pointer;background:transparent', label);
+            const b = el('button', 'flex:1;min-width:0;border:0;border-radius:7px;padding:6px 4px;color:#fff;font:13px system-ui,sans-serif;cursor:pointer;background:transparent;'
+                + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap', label);
             b.onclick = () => { sky.mode = m; paint(); applySky(performance.now()); b.blur(); };
             seg.appendChild(b);
             return [m, b];
         });
         const paint = () => modes.forEach(([m, b]) => { b.style.background = sky.mode === m ? '#3e8bff' : 'transparent'; });
         paint();
-        const audio = el('button', 'display:flex;justify-content:space-between;gap:14px;align-items:center;background:transparent;color:#fff;border:0;'
-            + 'padding:6px 6px;border-radius:8px;font:13px system-ui,sans-serif;cursor:pointer');
-        const dot = el('span', 'width:30px;height:16px;border-radius:8px;position:relative'), knob = el('span', 'position:absolute;top:2px;width:12px;height:12px;border-radius:50%;background:#fff');
-        dot.appendChild(knob);
-        audio.append(el('span', '', tr('engineSound')), dot);
-        const paintAudio = () => { dot.style.background = Engine.on ? '#3e8bff' : 'rgba(255,255,255,.25)'; knob.style.left = Engine.on ? '16px' : '2px'; };
-        audio.onclick = () => { Engine.on = !Engine.on; if (Engine.on) Engine.start(); paintAudio(); audio.blur(); };
-        paintAudio();
-        const wseg = el('div', 'display:flex;background:rgba(255,255,255,.1);border-radius:9px;padding:2px');
-        const wmodes = ['clear', 'fog', 'rain'].map(m => [m, tr(m)]).map(([m, label]) => {
-            const b = el('button', 'flex:1;border:0;border-radius:7px;padding:6px 9px;color:#fff;font:13px system-ui,sans-serif;cursor:pointer;background:transparent', label);
-            b.onclick = () => { weather.mode = m; paintW(); applySky(performance.now()); b.blur(); };
-            wseg.appendChild(b);
-            return [m, b];
-        });
-        const paintW = () => wmodes.forEach(([m, b]) => { b.style.background = weather.mode === m ? '#3e8bff' : 'transparent'; });
-        paintW();
+        // A switch row: label on the left, on/off on the right
+        const toggle = (label, get, set) => {
+            const row = el('button', 'display:flex;justify-content:space-between;gap:14px;align-items:center;background:transparent;color:#fff;border:0;'
+                + 'padding:6px 6px;border-radius:8px;font:13px system-ui,sans-serif;cursor:pointer');
+            const dot = el('span', 'flex:none;width:30px;height:16px;border-radius:8px;position:relative'), knob = el('span', 'position:absolute;top:2px;width:12px;height:12px;border-radius:50%;background:#fff');
+            dot.appendChild(knob);
+            row.append(el('span', 'min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', label), dot);
+            const paint = () => { dot.style.background = get() ? '#3e8bff' : 'rgba(255,255,255,.25)'; knob.style.left = get() ? '16px' : '2px'; };
+            row.onclick = () => { set(!get()); paint(); row.blur(); };
+            paint();
+            return row;
+        };
+        const audio = toggle(tr('engineSound'), () => Engine.on, v => { Engine.on = v; if (v) Engine.start(); });
+        const places = toggle(tr('showPlaces'), () => Pois.on, v => { Pois.on = v; });
+        const fuel = toggle(tr('fuel'), () => Fuel.on, v => { Fuel.on = v; if (v && Fuel.empty) Fuel.fill(); });
+        const online = toggle(tr('online'), () => Net.on, v => { Net.on = v; });
+        // The name over its field, the field as wide as the window
+        const nameRow = el('label', 'display:flex;flex-direction:column;gap:5px;font-size:13px;padding:4px 6px');
+        const nameIn = el('input', 'width:100%;box-sizing:border-box;background:#1b2028;color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:7px 9px;font:16px system-ui,sans-serif;outline:none');
+        nameIn.maxLength = 20;
+        nameIn.value = Net.name;
+        nameIn.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') nameIn.blur(); });
+        nameIn.addEventListener('change', () => { Net.name = nameIn.value; nameIn.value = Net.name; });
+        nameIn.placeholder = 'Pilota';
+        nameRow.append(el('span', 'opacity:.9', tr('playerName')), nameIn);
+        netStatus = el('div', 'font-size:12px;opacity:.65;padding:0 6px 4px');
         const back = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', tr('backToRoadKey'));
         back.onclick = () => {
             back.blur();
@@ -1022,8 +1446,18 @@
         if (touch) back.textContent = tr('backToRoad');
         const fs = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', tr('fullscreen'));
         fs.onclick = () => { fs.blur(); fullscreen(!(document.fullscreenElement || document.webkitFullscreenElement)); };
-        box.append(seg, wseg, audio, languagePicker('padding:4px 6px'), back, fs);
-        document.body.appendChild(box);
+        const invite = el('button', BTN + ';background:#1f8a4c;padding:7px 10px;font-size:13px', tr('invite'));
+        invite.onclick = () => { invite.blur(); share(); show(false); };
+        const left = col(), right = col();
+        left.append(seg, audio, places, fuel, languagePicker('padding:4px 6px'));
+        right.append(online, nameRow, netStatus, invite, back, fs);
+        if (wide) body.append(left, right);
+        else body.append(...left.children, ...right.children);
+        box.append(head, body);
+        veil.appendChild(box);
+        document.body.appendChild(veil);
+        // Outside the window closes it
+        veil.addEventListener('pointerdown', e => { if (e.target === veil) show(false); });
         const bar = el('div', 'position:fixed;right:16px;top:16px;z-index:401;display:flex;gap:8px');
         const mapBtn = el('button', BTN + ';background:#3e8bff;padding:0 14px;height:40px;font-size:13px', tr(touch ? 'map' : 'mapKey'));
         mapBtn.onclick = () => { mapBtn.blur(); show(false); openMap(); };
@@ -1036,11 +1470,15 @@
             + 'a1.65 1.65 0 0 0-1.51 1z"/></svg>');
         gear.title = gear.ariaLabel = tr('options');
         gear.onclick = () => { gear.blur(); show(!isOpen()); };
-        bar.append(mapBtn, gear);
+        // Players near: how many, opening their list (on computers only past the four listed on screen)
+        peopleBtn = el('button', BTN + ';background:rgba(14,18,24,.88);height:40px;padding:0 11px;display:none;align-items:center;gap:6px;font-size:14px',
+            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            + '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17" cy="9" r="2.8"/><path d="M16 14.2c3.3-.4 5.5 1.9 5.5 5.3"/></svg><span></span>');
+        peopleBtn.title = peopleBtn.ariaLabel = tr('nearbyPlayers');
+        peopleBtn.onclick = () => { peopleBtn.blur(); showPeople(true); };
+        bar.append(peopleBtn, mapBtn, gear);
         document.body.appendChild(bar);
-        // A tap or click anywhere else, or Escape, folds them away
-        document.addEventListener('pointerdown', e => { if (isOpen() && !box.contains(e.target) && !gear.contains(e.target)) show(false); }, true);
-        addEventListener('keydown', e => { if (e.code === 'Escape' && isOpen()) show(false); });
+        addEventListener('keydown', e => { if (e.code === 'Escape' && isOpen()) { e.stopPropagation(); show(false); } }, true);
     }
 
     // Fullscreen, and on phones locked sideways; needs a tap, and iPhones only allow it from the home screen
@@ -1063,7 +1501,12 @@
         else if (e.code === 'Escape' && big.open) closeMap();
         else if (e.code === 'KeyR' && osmSim.free.on && !big.open) osmSim.backToRoad();
         else if (e.code === 'KeyF') fullscreen(!(document.fullscreenElement || document.webkitFullscreenElement));
+        else if (e.code === 'KeyH' && !e.repeat && osmSim.free.on && !osmSim.free.paused && !big.open) Net.horn(true);
     });
+    window.addEventListener('keyup', e => { if (e.code === 'KeyH') Net.horn(false); });
+    window.addEventListener('blur', () => Net.horn(false));
+    // Closed or reloaded while driving: where the car is now, not up to 5 s ago
+    window.addEventListener('pagehide', () => { placeAt = 0; carPlace(performance.now()); });
 
     window.addEventListener('load', () => setTimeout(async () => {
         // Same setup as the bundled model in the app
@@ -1081,9 +1524,11 @@
         buildMini();
         buildHud();
         buildOptions();
+        buildPeople();
         buildExtras();
         if (touch) buildTouch();
         [big.cx, big.cy] = world(START.lat, START.lon);
+        invited() || lastPlace();
         applySky(performance.now());
         openMap();
         requestAnimationFrame(loop);
