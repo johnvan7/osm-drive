@@ -1446,6 +1446,10 @@
         if (touch) back.textContent = tr('backToRoad');
         const fs = el('button', BTN + ';background:rgba(255,255,255,.1);padding:7px 10px;font-size:13px;font-weight:400', tr('fullscreen'));
         fs.onclick = () => { fs.blur(); fullscreen(!(document.fullscreenElement || document.webkitFullscreenElement)); };
+        // Its name says what it will do, however full screen was entered or left (F, Esc, the start on phones)
+        const fsName = () => { fs.textContent = tr(document.fullscreenElement || document.webkitFullscreenElement ? 'exitFullscreen' : 'fullscreen'); };
+        for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, fsName);
+        fsName();
         const invite = el('button', BTN + ';background:#1f8a4c;padding:7px 10px;font-size:13px', tr('invite'));
         invite.onclick = () => { invite.blur(); share(); show(false); };
         const left = col(), right = col();
