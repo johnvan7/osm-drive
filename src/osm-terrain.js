@@ -11,7 +11,8 @@
     const cellKey = (i, j) => (i + 50000) * 100000 + j + 50000;
     const RAILED = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary'];
     const tiles = new Map();
-    const T = { on: true, version: 0, h0: 0, pitch: 0, slope: 0, samples: [], grid: new Map(), profiles: [], meshes: [], wayInfo: new Map(), wayInfoN: 0 };
+    // range: metres drawn around the scene's centre, when not the viewer's (a plane sees farther)
+    const T = { on: true, version: 0, h0: 0, pitch: 0, slope: 0, range: null, samples: [], grid: new Map(), profiles: [], meshes: [], wayInfo: new Map(), wayInfoN: 0 };
 
     // ---- DEM ----
     function tileXY(lat, lon) {
@@ -96,7 +97,10 @@
         if (!T.on) return 0;
         const ll = OsmMatch.unproject(x, y);
         const h = heightLL(ll.lat, ll.lon);
-        return Number.isFinite(h) ? h : T.h0;
+        if (Number.isFinite(h)) return h;
+        // Not in yet: the coarse elevation a plane loads, else the height last under the car
+        const coarse = T.coarse && T.coarse(ll.lat, ll.lon);
+        return Number.isFinite(coarse) ? coarse : T.h0;
     }
 
     // Terrain blurred over about 10 m: one height per place whatever roads are loaded, so nothing jumps between scenes.
@@ -262,6 +266,16 @@
     T.dem = dem;
     // Whether the elevation under a point has arrived
     T.has = (lat, lon) => Number.isFinite(heightLL(lat, lon));
+    // Whether it has arrived over the whole of a vector tile (x/y at the tiles' zoom): what is laid on the ground
+    // waits for it, or it would be built at a guessed height
+    T.tileReady = key => {
+        const [x, y] = key.split('/').map(Number);
+        for (const dx of [-0.49, 0, 0.49]) for (const dy of [-0.49, 0, 0.49]) {
+            const [lat, lon] = OsmOnline.tileCentre(x + dx, y + dy);
+            if (!T.has(lat, lon)) return false;
+        }
+        return true;
+    };
     // Map coordinates change with a new origin: everything cached in them goes
     T.reset = () => {
         lattice.clear();
@@ -348,6 +362,12 @@
                 // Under a forecourt, never above it
                 const pad = window.Fuel && Fuel.padAt(gx + i * GROUND_STEP, gy + j * GROUND_STEP, Fuel.SKIRT + GROUND_STEP);
                 if (pad) h = Math.min(h, pad.h - 0.3);
+                // Round a runway, level with it: graded flat, raised or cut into the land, easing back over 40 m
+                const flat = T.flatAt && T.flatAt(gx + i * GROUND_STEP, gy + j * GROUND_STEP, 40 + GROUND_STEP);
+                if (flat) {
+                    const k = Math.min(1, Math.max(0, (flat.d - GROUND_STEP) / 40));
+                    h = flat.h - 0.4 + (h - flat.h + 0.4) * k * k * (3 - 2 * k);
+                }
                 hs[v] = h;
             }
         }
@@ -407,7 +427,8 @@
             if (!T.profiles[ri]) return;
             const info = wayInfo(r.way);
             const { pts, hs, wl, wr } = T.profiles[ri];
-            const inRange = p => Math.hypot(p.x - cx, p.y - cy) < MAP_RANGE && (!r.clip || Math.hypot(p.x - r.clip.x, p.y - r.clip.y) < r.clip.r);
+            const R = T.range || MAP_RANGE;
+            const inRange = p => Math.hypot(p.x - cx, p.y - cy) < R && (!r.clip || Math.hypot(p.x - r.clip.x, p.y - r.clip.y) < r.clip.r);
             for (let i = 0; i < pts.length - 1; i++) {
                 const a = pts[i], b = pts[i + 1];
                 if (!inRange(a) || !inRange(b)) continue;
@@ -467,6 +488,7 @@
             const m = new THREE.Mesh(g, mat);
             map.inner.add(m);
             T.meshes.push(m);
+            if (mat === mats.ground) T.groundMesh = m;
         }
     }
 
@@ -475,7 +497,7 @@
     function buildSky() {
         sky = new THREE.Mesh(new THREE.SphereGeometry(800, 32, 16), new THREE.ShaderMaterial({
             uniforms: { zenith: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, below: { value: new THREE.Color() }, bg: { value: new THREE.Color() }, mixK: { value: 1 } },
-            vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+            vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(mat3(modelMatrix) * position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
             fragmentShader: `uniform vec3 zenith, horizon, below, bg; uniform float mixK; varying vec3 vDir;
                 void main() {
                     float y = vDir.y;
@@ -513,12 +535,17 @@
         sky.visible = o > 0.01;
         sky.position.copy(camera.position);
         stars.position.copy(camera.position);
+        // Tilted with the world, so its horizon stays on the land's when a plane banks
+        if (map.root && T.car) {
+            sky.rotation.copy(map.root.rotation);
+            stars.rotation.copy(map.root.rotation);
+        }
         stars.visible = isDarkTheme && o > 0.01 && !T.overcast;
         stars.material.opacity = o * 0.8;
         if (scene.fog) {
             scene.fog.color.copy(bg).lerp(new THREE.Color(p.horizon), o);
-            // Set by the game for fog and rain: { near, far } in metres
-            const d = T.fog || { near: 72, far: 216 };
+            // Set by the game for fog and rain: { near, far } in metres; in flight, by the plane, much farther
+            const d = T.fogAir || T.fog || { near: 72, far: 216 };
             scene.fog.near = d.near / METERS_PER_UNIT;
             scene.fog.far = d.far / METERS_PER_UNIT;
         }
@@ -584,7 +611,7 @@
                         const qa = at(a), qb = at(b), oa = qa ? qa.o : o0, ob = qb ? qb.o : o0, o = (oa + ob) / 2;
                         const mx = (a.x + b.x) / 2 + (a.nx + b.nx) / 2 * o, my = (a.y + b.y) / 2 + (a.ny + b.ny) / 2 * o;
                         const far = Math.hypot(mx - cx, my - cy);
-                        if (far > MAP_RANGE) continue;
+                        if (far > (T.range || MAP_RANGE)) continue;
                         if (dashed && (((a.s + b.s) / 2 + (r.s0 || 0)) % period) > r.dash[0]) continue;
                         if (r.clip && Math.hypot(mx - r.clip.x, my - r.clip.y) > r.clip.r) continue;
                         if (insideOther(ri, mx, my)) continue;
@@ -633,7 +660,8 @@
                 map.pose = { x: c.x, y: c.y, brg: b };
                 map.inner.position.set(c.x * u, -c.z * u, -c.y * u);
                 map.root.rotation.set(c.pitch, b, c.roll);
-                T.h0 = c.z;
+                // A plane's own height is not the ground's
+                T.h0 = c.ground != null ? c.ground : c.z;
                 T.slope = Math.tan(c.pitch);
                 fade();
                 return shown;

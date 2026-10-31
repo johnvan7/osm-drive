@@ -4,6 +4,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 const NEAR = 500;          // m: within this, full updates
+const PLANE_NEAR = 4000;   // m: planes are seen from much farther
 const MAX_NEAR = 12;       // at most this many, the nearest; a crowd beyond them is only counted
 const FAR_EVERY = 5000;    // ms between the rough list of everyone else, for the map
 const FAR_MAX = 200;       // nearest players in that list
@@ -13,8 +14,8 @@ const MAP_EXACT = 14;      // map zoom from which players are shown one by one, 
 const MAP_MAX = 300;       // at most this many dots or groups in a map answer
 const CELL_LAT = 0.005, CELL_LON = 0.007;   // about 550 m in Italy
 const M_PER_DEG = 111320;
-// Pages that may join: the game on this Worker, on GitHub Pages and on a local server
-const ORIGINS = [/^https:\/\/johnvan7\.github\.io$/, /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/];
+// Pages that may join: the game on this Worker, and on a local server
+const ORIGINS = [/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/];
 
 export default {
     async fetch(req, env) {
@@ -40,6 +41,7 @@ export class World extends DurableObject {
         super(ctx, env);
         this.players = new Map();   // ws -> player
         this.cells = new Map();     // cell -> Set(player)
+        this.flying = new Set();    // the players in a plane
         // Back from hibernation: who is connected is kept with each socket
         for (const ws of ctx.getWebSockets()) {
             const p = ws.deserializeAttachment();
@@ -63,12 +65,13 @@ export class World extends DurableObject {
 
     add(ws, p) {
         this.players.set(ws, p);
+        if (p.k) this.flying.add(p);
         if (p.lat != null) this.place(p);
     }
 
     save(ws) {
         const p = this.players.get(ws);
-        ws.serializeAttachment({ id: p.id, name: p.name, lat: p.lat, lon: p.lon, b: p.b, v: p.v, g: p.g, t: p.t });
+        ws.serializeAttachment({ id: p.id, name: p.name, lat: p.lat, lon: p.lon, b: p.b, v: p.v, g: p.g, t: p.t, a: p.a, k: p.k });
     }
 
     place(p) {
@@ -88,6 +91,7 @@ export class World extends DurableObject {
             s?.delete(p);
             if (s && !s.size) this.cells.delete(p.cell);
         }
+        this.flying.delete(p);
         this.players.delete(ws);
     }
 
@@ -103,7 +107,10 @@ export class World extends DurableObject {
         let m;
         try { m = JSON.parse(data); } catch (err) { return; }
         if (m.t === 'hi') {
-            p.name = cleanName(m.name) || 'Pilota';
+            const name = cleanName(m.name) || 'Pilota';
+            // A new name: everyone who knew the old one is told again
+            if (name !== p.name) for (const o of this.players.values()) o.known.delete(p.id);
+            p.name = name;
             this.save(ws);
             return;
         }
@@ -122,9 +129,12 @@ export class World extends DurableObject {
             return;
         }
         if (m.t !== 's' || !Array.isArray(m.s)) return;
-        const [lat, lon, b, v, g] = m.s.map(Number);
+        const [lat, lon, b, v, g, a, k] = m.s.map(Number);
         if (!(Math.abs(lat) <= 85 && Math.abs(lon) <= 180) || !Number.isFinite(b) || !Number.isFinite(v)) return;
-        Object.assign(p, { lat, lon, b: ((b % 360) + 360) % 360, v: Math.max(-20, Math.min(80, v)), g: g ? 1 : 0, t: now });
+        // A plane also tells its altitude above the sea
+        const plane = k === 1 && Number.isFinite(a);
+        Object.assign(p, { lat, lon, b: ((b % 360) + 360) % 360, v: Math.max(-20, Math.min(100, v)), g: g ? 1 : 0, t: now, k: plane ? 1 : 0, a: plane ? Math.max(-500, Math.min(9000, Math.round(a))) : null });
+        if (p.k) this.flying.add(p); else this.flying.delete(p);
         this.place(p);
         this.save(ws);
         ws.send(JSON.stringify(this.view(p, now)));
@@ -146,9 +156,16 @@ export class World extends DurableObject {
     view(p, now) {
         const near = this.around(p, now).filter(n => n.d < NEAR);
         const crowd = near.length;
+        // Planes, seen from farther than cars
+        const seen = new Set(near.map(n => n.o));
+        for (const o of this.flying) {
+            if (o === p || seen.has(o) || o.lat == null || now - o.t > STALE) continue;
+            const d = dist(p, o);
+            if (d < PLANE_NEAR) near.push({ o, d });
+        }
         near.sort((a, b) => a.d - b.d);
         const shown = near.slice(0, MAX_NEAR);
-        const out = { t: 'u', c: crowd, n: shown.map(({ o }) => [o.id, round6(o.lat), round6(o.lon), Math.round(o.b), Math.round(o.v * 10) / 10, o.g, now - o.t]) };
+        const out = { t: 'u', c: crowd, n: shown.map(({ o }) => [o.id, round6(o.lat), round6(o.lon), Math.round(o.b), Math.round(o.v * 10) / 10, o.g, now - o.t, o.a ?? null, o.k || 0]) };
         const names = {};
         for (const { o } of shown) if (!p.known.has(o.id)) { names[o.id] = o.name; p.known.add(o.id); }
         if (now - p.farAt > FAR_EVERY) {

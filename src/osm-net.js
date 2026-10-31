@@ -8,8 +8,7 @@
     const GHOST_MS = 5000;      // after a start, help or back to the road: no collisions for a moment
     const LEN = 4.4, WID = 1.8; // m, the car
     const SHOW = 700;           // m: other cars drawn within this
-    // On GitHub Pages the realtime world is on the Worker; elsewhere on the same host as the page
-    const WORKER = 'wss://osm-drive.johnvan7.workers.dev/ws';
+    const PLANE_SHOW = 4000;    // m: and planes within this
     const RAD = Math.PI / 180;
 
     let on = true, name = '';
@@ -26,7 +25,6 @@
     function url() {
         const q = new URLSearchParams(location.search).get('server');
         if (q) return q;
-        if (/github\.io$/.test(location.hostname)) return WORKER;
         return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
     }
 
@@ -84,10 +82,10 @@
         if (m.total != null) net.total = m.total;
         for (const [id, n] of Object.entries(m.names || {})) entry(id).name = n || 'Pilota';
         const seen = new Set();
-        for (const [id, lat, lon, b, v, g, age] of m.n || []) {
+        for (const [id, lat, lon, b, v, g, age, alt, kind] of m.n || []) {
             const o = entry(id);
             seen.add(id);
-            o.buf.push({ t: now - age, lat, lon, b, v, g });
+            o.buf.push({ t: now - age, lat, lon, b, v, g, a: alt, k: kind || 0 });
             o.buf.sort((p, q) => p.t - q.t);
             if (o.buf.length > 12) o.buf.shift();
             o.nearAt = now;
@@ -141,8 +139,8 @@
         const every = near ? NEAR_MS : Math.abs(f.v) > 1 ? ALONE_MS : STILL_MS;
         if (now - net.sentAt < every) return;
         net.sentAt = now;
-        const ll = OsmMatch.unproject(f.x, f.y);
-        net.ws.send(JSON.stringify({ t: 's', s: [+ll.lat.toFixed(7), +ll.lon.toFixed(7), Math.round(f.brg * 10) / 10, Math.round(f.v * 10) / 10, ghost() ? 1 : 0] }));
+        const ll = OsmMatch.unproject(f.x, f.y), plane = f.kind === 'plane';
+        net.ws.send(JSON.stringify({ t: 's', s: [+ll.lat.toFixed(7), +ll.lon.toFixed(7), Math.round(f.brg * 10) / 10, Math.round(f.v * 10) / 10, ghost() ? 1 : 0, plane ? Math.round(f.z) : null, plane ? 1 : 0] }));
     }
 
     const ghost = () => performance.now() < net.ghostUntil;
@@ -167,17 +165,18 @@
             else { b = buf[i]; break; }
         }
         const pa = OsmMatch.project(a.lat, a.lon);
-        let x = pa.x, y = pa.y, brg = a.b, v = a.v;
+        let x = pa.x, y = pa.y, brg = a.b, v = a.v, alt = a.a;
         if (b && b.t > a.t) {
             const pb = OsmMatch.project(b.lat, b.lon), k = Math.max(0, Math.min(1, (R - a.t) / (b.t - a.t)));
-            // A jump (help, back to the road) is not slid through
-            if (Math.hypot(pb.x - pa.x, pb.y - pa.y) < 40) {
+            // A jump (help, back to the road) is not slid through; a plane covers more between updates
+            if (Math.hypot(pb.x - pa.x, pb.y - pa.y) < Math.max(40, 1.5 * Math.max(a.v, b.v) * (b.t - a.t) / 1000)) {
                 x += (pb.x - pa.x) * k;
                 y += (pb.y - pa.y) * k;
                 brg = a.b + OsmMatch.turnOf(a.b, b.b) * k;
                 v = a.v + (b.v - a.v) * k;
+                if (alt != null && b.a != null) alt += (b.a - alt) * k;
             } else if (k > 0.5) {
-                x = pb.x; y = pb.y; brg = b.b; v = b.v;
+                x = pb.x; y = pb.y; brg = b.b; v = b.v; alt = b.a;
             }
         } else {
             // Past the last update: on along its heading, for at most half a second
@@ -185,7 +184,9 @@
             x += Math.sin(a.b * RAD) * ahead;
             y += Math.cos(a.b * RAD) * ahead;
         }
-        return { x, y, brg: ((brg % 360) + 360) % 360, v, g: (b || a).g };
+        // A plane banks into its turns: from how fast its heading changes
+        const turn = b && b.t > a.t ? OsmMatch.turnOf(a.b, b.b) * RAD / ((b.t - a.t) / 1000) : 0;
+        return { x, y, brg: ((brg % 360) + 360) % 360, v, g: (b || a).g, k: (b || a).k, alt, bank: Math.max(-1, Math.min(1, Math.atan(v * turn / 9.81))) };
     }
 
     // A copy of the player's car in the other's colour, its name above it
@@ -198,6 +199,8 @@
         // The model faces the road's direction in the view: undo that, so it faces +Z and the heading turns it
         turn.rotation.y = -roadPivot.rotation.y;
         const car = model.clone(true), tint = new THREE.Color(o.colour);
+        // The own car is hidden while flying: its copies are not
+        car.visible = true;
         car.traverse(m => {
             if (!m.isMesh) return;
             m.material = (Array.isArray(m.material) ? m.material : [m.material]).map(mat => {
@@ -250,26 +253,49 @@
     function disposeCar(o) {
         for (const m of o.mats || []) m.dispose();
         if (o.label) { o.label.material.map.dispose(); o.label.material.dispose(); }
-        o.mesh = o.label = o.tilt = null;
+        o.mesh = o.label = o.tilt = o.plane = null;
         o.mats = [];
+    }
+
+    // Another player's plane, seen through the fog from far off, its name above it a little larger
+    function makePlane(o) {
+        const p = window.Air && Air.makePlane(false);
+        if (!p) { if (window.Air) Air.load(); return null; }
+        const group = new THREE.Group();
+        group.add(p.wrap);
+        group.add(o.label = label(o));
+        o.label.scale.multiplyScalar(3);
+        o.plane = p;
+        o.mats = [];
+        return group;
     }
 
     function draw(now) {
         const f = osmSim.free, u = 1 / METERS_PER_UNIT;
         for (const o of others.values()) {
             o.pose = f.on ? poseOf(o, now) : null;
-            const show = o.pose && Math.hypot(o.pose.x - f.x, o.pose.y - f.y) < SHOW;
-            if (!show) {
+            const plane = !!(o.pose && o.pose.k && o.pose.alt != null);
+            const show = o.pose && Math.hypot(o.pose.x - f.x, o.pose.y - f.y) < (plane ? PLANE_SHOW : SHOW);
+            // A car that took off, or a plane that is a car again: drawn anew
+            if (!show || (o.mesh && o.isPlane !== plane)) {
                 if (o.mesh) { map.inner.remove(o.mesh); disposeCar(o); }
-                continue;
+                if (!show) continue;
             }
             if (o.mesh && o.label && o.label.userData.name !== o.name) { map.inner.remove(o.mesh); disposeCar(o); }
             if (!o.mesh) {
-                o.mesh = makeCar(o);
+                o.mesh = plane ? makePlane(o) : makeCar(o);
                 if (!o.mesh) continue;
+                o.isPlane = plane;
                 map.inner.add(o.mesh);
             }
             const { x, y, brg, g } = o.pose, b = brg * RAD, fx = Math.sin(b), fy = Math.cos(b);
+            if (plane) {
+                Air.pose(o.plane, x, y, o.pose.alt, brg, 0.03, o.pose.bank);
+                Air.animate(o.plane, 1 / 60, 2300, 0, 0);
+                o.label.position.copy(o.plane.wrap.position);
+                o.label.position.y += 3.2 * u;
+                continue;
+            }
             const h = Terrain.surface(x, y), front = Terrain.surface(x + fx * LEN / 2, y + fy * LEN / 2), back = Terrain.surface(x - fx * LEN / 2, y - fy * LEN / 2);
             o.mesh.position.set(-x * u, h * u, y * u);
             o.mesh.rotation.y = -b;
@@ -354,11 +380,12 @@
 
     const knocks = new Map();
     function collide(f, dt) {
-        if (!on || ghost()) return;
+        // Planes pass over cars, and each other
+        if (!on || ghost() || f.kind === 'plane') return;
         const now = performance.now(), mine = corners(f.x, f.y, f.brg);
         for (const o of others.values()) {
             const p = o.pose;
-            if (!p || p.g || Math.abs(p.x - f.x) > 8 || Math.abs(p.y - f.y) > 8) continue;
+            if (!p || p.g || p.k || Math.abs(p.x - f.x) > 8 || Math.abs(p.y - f.y) > 8) continue;
             const hit = overlap(mine, corners(p.x, p.y, p.brg));
             if (!hit) continue;
             // From this car towards the other

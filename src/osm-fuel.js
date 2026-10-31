@@ -9,11 +9,16 @@
     const FILL_S = 3.5;              // s from empty to full
     // Driving normally (light throttle, low revs) a tank lasts about 40 km: a game range, not a car's
     const RATE = 1300;
+    // The plane: about 45 minutes cruising, some 150 km; filled at an airport in a few seconds more than a car
+    const PLANE_RATE = 2400, PLANE_TANK = 200, PLANE_FILL_S = 6;
     const RAD = Math.PI / 180;
 
-    const state = { on: true, level: 1 };
+    // A tank for each: the car's `level`, the plane's `plane`
+    const state = { on: true, level: 1, plane: 1 };
     try { Object.assign(state, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (err) { /* storage blocked */ }
     const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (err) { /* storage blocked */ } };
+    const flying = () => window.osmSim && osmSim.free.kind === 'plane';
+    const slot = () => flying() ? 'plane' : 'level';
 
     // ---- Stations ----
     const placed = new Map();   // lat,lon -> station, once its road and elevation have come in
@@ -145,37 +150,39 @@
         // Stations set in place as their tiles come in, before the scene's ground and guardrails are laid around them
         if (now - placedAt > 1000 && map.inner) { placedAt = now; near(f.x, f.y, 3000); drawNear(f); }
         if (f.paused || !state.on) { filling = null; return; }
+        const plane = f.kind === 'plane', k = slot();
         // What the engine burns: a little at idle, more with the throttle and the revs; nothing when it has stopped
-        if (state.level > 0) {
-            const load = (now < f.shiftUntil ? 0.1 : f.thr) * f.rpm / 3000;
-            state.level = Math.max(0, state.level - (0.25 + 1.5 * load) / RATE * dt);
+        if (state[k] > 0) {
+            const burn = plane ? (0.3 + 0.7 * f.thr) / PLANE_RATE : (0.25 + 1.5 * (now < f.shiftUntil ? 0.1 : f.thr) * f.rpm / 3000) / RATE;
+            state[k] = Math.max(0, state[k] - burn * dt);
         }
-        const pad = padAt(f.x, f.y, 1), stopped = Math.abs(f.v) < 0.3;
+        // Where to fill up: a station's forecourt, or for a plane an airport's paving, on its wheels
+        const pad = plane ? !f.air && window.Air && Air.pavedAt(f.x, f.y) != null : padAt(f.x, f.y, 1), stopped = Math.abs(f.v) < 0.3;
         still = pad && stopped ? still + dt : 0;
-        if (pad && still > 1 && (state.level < 0.98 || filling)) {
+        if (pad && still > 1 && (state[k] < 0.98 || filling)) {
             if (!filling) {
-                filling = { from: state.level };
+                filling = { from: state[k], k };
                 if (window.Engine && Engine.pump) Engine.pump();
             }
-            state.level = Math.min(1, state.level + dt / FILL_S);
-            if (state.level >= 1) done();
+            state[k] = Math.min(1, state[k] + dt / (plane ? PLANE_FILL_S : FILL_S));
+            if (state[k] >= 1) done();
         } else if (filling) {
             done();
         }
         // Rolling onto a forecourt: how to fill up
-        if (pad && !filling && !stopped && Math.abs(f.v) < 7 && state.level < 0.9 && now - hintAt > 10000) {
+        if (pad && !filling && !stopped && Math.abs(f.v) < 7 && state[k] < 0.9 && now - hintAt > 10000) {
             hintAt = now;
-            say('stopUnder');
+            say(plane ? 'stopToRefuelPlane' : 'stopUnder');
         }
-        if (state.level < 0.15 && !reserve) { reserve = true; Fuel.onReserve && Fuel.onReserve(); }
-        if (state.level > 0.2) reserve = false;
-        if (state.level <= 0 && !empty) { empty = true; say('fuelEmpty'); }
-        if (state.level > 0) empty = false;
+        if (state[k] < 0.15 && !reserve) { reserve = true; Fuel.onReserve && Fuel.onReserve(); }
+        if (state[k] > 0.2) reserve = false;
+        if (state[k] <= 0 && !empty) { empty = true; say(plane ? 'fuelEmptyPlane' : 'fuelEmpty'); }
+        if (state[k] > 0) empty = false;
         if (now - saveAt > 2000) { saveAt = now; save(); }
     }
 
     function done() {
-        const litres = Math.round((state.level - filling.from) * TANK);
+        const litres = Math.round((state[filling.k] - filling.from) * (filling.k === 'plane' ? PLANE_TANK : TANK));
         filling = null;
         if (litres > 0) say('refueled', litres);
         if (window.Engine && Engine.ding) Engine.ding();
@@ -186,15 +193,25 @@
         PAD_W, PAD_D, version: 0,
         get on() { return state.on; },
         set on(v) { state.on = !!v; save(); },
-        get level() { return state.level; },
+        // The tank of what is being driven or flown
+        get level() { return state[slot()]; },
         get filling() { return !!filling; },
         // Out of fuel: no throttle, no engine sound
-        get empty() { return state.on && state.level <= 0; },
-        fill() { state.level = 1; save(); },
+        get empty() { return state.on && state[slot()] <= 0; },
+        fill() { state.level = 1; state.plane = 1; save(); },
         place, near, padAt, heightAt, SKIRT,
-        // Help on the way: to the nearest station loaded, tank full; with none, a can with a quarter of a tank
+        // Help on the way: to the nearest station loaded, tank full; with none, a can with a quarter of a tank. A
+        // plane is brought to the nearest runway, refuelled
         rescue() {
-            const f = osmSim.free, n = near(f.x, f.y, 20000)[0];
+            const f = osmSim.free;
+            if (f.kind === 'plane') {
+                const rw = window.Air && Air.runwayNear(f.x, f.y, 60000);
+                state.plane = rw ? 1 : Math.max(state.plane, 0.25);
+                save();
+                if (rw) Air.placeOn(f, rw);
+                return rw ? { name: rw.name } : null;
+            }
+            const n = near(f.x, f.y, 20000)[0];
             if (!n) { state.level = Math.max(state.level, 0.25); save(); return null; }
             const st = n.st;
             Object.assign(f, { x: st.x, y: st.y, brg: OsmMatch.bearing(0, 0, st.fx, st.fy), v: 0, vz: 0, steer: 0, z: -1e9, offSince: 0 });

@@ -7,7 +7,8 @@
     const CARD = 'background:rgba(14,18,24,.88);color:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.45);font:14px system-ui,sans-serif';
     const BTN = 'border:0;border-radius:10px;font:600 14px system-ui,sans-serif;cursor:pointer;padding:10px 16px;color:#fff';
     const tr = I18n.t;
-    const CREDITS = '\u00a9 OpenStreetMap contributors \u00b7 \u00a9 OpenMapTiles \u00b7 OpenFreeMap \u00b7 ' + tr('credits');
+    const MAP_CREDIT = '\u00a9 OpenStreetMap contributors \u00b7 \u00a9 OpenMapTiles \u00b7 OpenFreeMap';
+    const CREDITS = MAP_CREDIT + ' \u00b7 ' + tr('credits');
 
     // Road look shared by the map and the minimap: OpenMapTiles class -> colour, width in px at zoom 14
     const ROAD = {
@@ -86,6 +87,11 @@
 
     // The last place, for the map after a reload: the car while driving, else the start chosen
     const KEY_PLACE = 'osm-drive-place';
+    // What the next start is: car or plane, a plane from a runway or in the air
+    const KEY_VEHICLE = 'osm-drive-vehicle';
+    const vehicle = { kind: 'car', air: false };
+    try { Object.assign(vehicle, JSON.parse(localStorage.getItem(KEY_VEHICLE) || '{}')); } catch (err) { /* storage blocked */ }
+    function saveVehicle() { try { localStorage.setItem(KEY_VEHICLE, JSON.stringify(vehicle)); } catch (err) { /* storage blocked */ } }
     let placeAt = 0;
     function savePlace([lat, lon]) {
         try { localStorage.setItem(KEY_PLACE, lat.toFixed(5) + ',' + lon.toFixed(5)); } catch (err) { /* storage blocked */ }
@@ -153,9 +159,23 @@
         big.canvas = el('canvas', 'position:absolute;inset:0;width:100%;height:100%');
         big.box.appendChild(big.canvas);
 
-        // Search, my position
-        const side = el('div', CARD + ';position:absolute;left:20px;top:20px;width:min(360px, calc(100% - 100px));box-sizing:border-box;padding:14px');
-        side.innerHTML = `<div style="font-size:18px;font-weight:700;margin-bottom:10px">${tr('whereFrom')}</div>`;
+        // Search, my position, language: folded into a button in the corner, opened when wanted, so the map has the room
+        const side = el('div', CARD + ';position:absolute;left:20px;top:20px;width:min(360px, calc(100% - 100px));box-sizing:border-box;padding:14px;display:none');
+        const head = el('div', 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px');
+        const fold = el('button', 'background:transparent;border:0;color:#fff;font-size:20px;line-height:1;cursor:pointer;opacity:.75;padding:2px 6px', '\u2715');
+        fold.title = fold.ariaLabel = tr('close');
+        head.append(el('div', 'font-size:18px;font-weight:700', tr('whereFrom')), fold);
+        side.appendChild(head);
+        const searchBtn = el('button', CARD + ';position:absolute;left:20px;top:20px;width:44px;height:44px;border:0;cursor:pointer;display:flex;align-items:center;justify-content:center',
+            '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></svg>');
+        searchBtn.title = searchBtn.ariaLabel = tr('searchPlaceholder');
+        big.side = open => {
+            side.style.display = open ? 'block' : 'none';
+            searchBtn.style.display = open ? 'none' : 'flex';
+            if (open && !touch) big.search.focus();
+        };
+        searchBtn.onclick = e => { e.stopPropagation(); searchBtn.blur(); big.side(true); };
+        fold.onclick = e => { e.stopPropagation(); big.side(false); };
         // 16 px: on smaller text iPhones zoom the whole page into the field
         big.search = el('input', 'width:100%;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.18);'
             + 'background:rgba(255,255,255,.08);color:#fff;font:16px system-ui,sans-serif;outline:none');
@@ -164,7 +184,7 @@
         const here = el('button', BTN + ';margin-top:10px;width:100%;background:rgba(255,255,255,.12)', tr('myPosition'));
         side.append(big.search, big.results, here, languagePicker('margin-top:8px'),
             el('div', 'margin-top:10px;opacity:.65;font-size:12px', tr(touch ? 'hintTouch' : 'hintMouse')));
-        big.box.appendChild(side);
+        big.box.append(side, searchBtn);
 
         const zoom = el('div', 'position:absolute;right:20px;top:20px;display:flex;flex-direction:column;align-items:flex-end;gap:8px');
         for (const [label, d] of [['+', 1], ['\u2212', -1]]) {
@@ -183,6 +203,24 @@
         big.nav = el('button', BTN + ';background:#1f8a4c;display:none', tr('navigateHere'));
         big.nav.disabled = true;
         big.bar.append(big.msg, big.nav, big.go, big.close);
+        // Car or plane, a plane from a runway or already in the air: on a row of their own above the buttons
+        const segment = (opts, get, set) => {
+            const box = el('div', 'display:flex;background:rgba(255,255,255,.1);border-radius:9px;padding:2px');
+            const bs = opts.map(([v, label]) => {
+                const b = el('button', 'border:0;border-radius:7px;padding:6px 12px;color:#fff;font:13px system-ui,sans-serif;cursor:pointer;background:transparent;white-space:nowrap', label);
+                b.onclick = e => { e.stopPropagation(); set(v); paintAll(); b.blur(); };
+                box.appendChild(b);
+                return [v, b];
+            });
+            box.paint = () => bs.forEach(([v, b]) => { b.style.background = get() === v ? '#3e8bff' : 'transparent'; });
+            return box;
+        };
+        const kindSeg = segment([['car', tr('car')], ['plane', tr('plane')]], () => vehicle.kind, v => { vehicle.kind = v; saveVehicle(); });
+        const airSeg = segment([[false, tr('fromRunway')], [true, tr('inAir')]], () => vehicle.air, v => { vehicle.air = v; saveVehicle(); });
+        const paintAll = () => { kindSeg.paint(); airSeg.paint(); airSeg.style.display = vehicle.kind === 'plane' ? 'flex' : 'none'; };
+        paintAll();
+        big.bar.prepend(el('div', 'width:100%;display:flex;gap:8px;flex-wrap:wrap'));
+        big.bar.firstChild.append(kindSeg, airSeg);
         big.box.appendChild(big.bar);
         // How many are playing, under the zoom buttons
         big.players = el('div', CARD + ';padding:6px 10px;font-size:12px;font-weight:600;display:none;pointer-events:none;white-space:nowrap;align-self:flex-end');
@@ -193,8 +231,10 @@
         // Phones held sideways have little height: everything smaller, the bar in a corner
         if (innerHeight < 520) {
             side.style.cssText += ';padding:10px;width:min(300px, 44%);top:10px;left:10px';
-            side.firstChild.style.display = 'none';
+            Object.assign(head.style, { marginBottom: '6px' });
+            head.firstChild.style.fontSize = '15px';
             side.lastChild.style.display = 'none';
+            Object.assign(searchBtn.style, { top: '10px', left: '10px' });
             here.style.marginTop = '6px';
             big.search.style.padding = '9px 10px';
             Object.assign(big.bar.style, { left: '', right: '10px', bottom: '22px', transform: 'none', maxWidth: '52%', padding: '8px', gap: '6px' });
@@ -205,17 +245,29 @@
         }
 
         big.close.onclick = () => closeMap();
-        big.nav.onclick = () => navigate(big.spawn, big.label);
+        big.nav.onclick = () => {
+            const f = osmSim.free;
+            // A plane flies straight there: to a runway when the point is near one
+            if (f.on && f.kind === 'plane' && big.spawn) {
+                const p = OsmMatch.project(big.spawn[0], big.spawn[1]);
+                Air.setNav(p.x, p.y, big.label || tr('destination'));
+                stopNav();
+                closeMap(true);
+                return;
+            }
+            navigate(big.spawn, big.label);
+        };
         big.go.onclick = async () => {
             Engine.start();
             if (Net.on && !Net.name && !await askName()) return;
             Fuel.fill();
             if (touch) fullscreen(true);
             closeMap(true);
-            if (!await osmSim.startFree({ lat: big.spawn[0], lon: big.spawn[1] })) {
+            if (!await osmSim.startFree({ lat: big.spawn[0], lon: big.spawn[1] }, { vehicle: vehicle.kind, inAir: vehicle.air })) {
                 openMap();
                 big.msg.textContent = tr('noRoad300');
             }
+            if (vehicle.kind === 'plane' && !touch) flash(tr('planeKeys'));
             // The sky of the new place straight away, not at the next minute's update
             applySky(performance.now());
             town.at = 0;
@@ -223,7 +275,7 @@
         here.onclick = () => {
             big.msg.textContent = tr('locating');
             navigator.geolocation.getCurrentPosition(
-                p => jump(p.coords.latitude, p.coords.longitude, tr('yourPosition')),
+                p => { big.side(false); jump(p.coords.latitude, p.coords.longitude, tr('yourPosition')); },
                 () => { big.msg.textContent = tr('noPosition'); },
                 { enableHighAccuracy: true, timeout: 10000 });
         };
@@ -249,6 +301,7 @@
                         item.onclick = () => {
                             big.results.innerHTML = '';
                             big.search.value = label.main;
+                            big.side(false);
                             jump(f.geometry.coordinates[1], f.geometry.coordinates[0], label.main + (label.sub ? ', ' + label.sub : ''));
                         };
                         big.results.appendChild(item);
@@ -467,6 +520,32 @@
                 g.stroke();
             }
         }
+        // Airports: aprons, then runways and taxiways at their real width (never thinner than a line), runways light
+        const mPerPx = 40075016 * Math.cos(latLon(big.cx, big.cy)[0] * RAD) / scale;
+        for (const { x, y, t } of tiles) {
+            const l = t.ready && t.layers.aeroway;
+            if (!l) continue;
+            const P = tileProjector(x, y, z, l.extent, scale, W, H);
+            for (const f of l.features) {
+                if (f.type !== 3 || !['apron', 'runway', 'taxiway'].includes(f.props.class)) continue;
+                g.fillStyle = f.props.class === 'runway' ? '#c9d1db' : '#3a424e';
+                g.beginPath();
+                for (const ring of f.lines) ring.forEach((p, i) => { const [sx, sy] = P(p); i ? g.lineTo(sx, sy) : g.moveTo(sx, sy); });
+                g.fill('evenodd');
+            }
+            for (const cls of ['taxiway', 'runway']) {
+                g.strokeStyle = cls === 'runway' ? '#c9d1db' : '#6c7684';
+                g.lineWidth = Math.max(cls === 'runway' ? 3 : 1.5, (cls === 'runway' ? 40 : 14) / mPerPx);
+                g.lineCap = 'butt';
+                g.beginPath();
+                for (const f of l.features) {
+                    if (f.type !== 2 || f.props.class !== cls) continue;
+                    for (const line of f.lines) line.forEach((p, i) => { const [sx, sy] = P(p); i ? g.lineTo(sx, sy) : g.moveTo(sx, sy); });
+                }
+                g.stroke();
+                g.lineCap = 'round';
+            }
+        }
         // Labels: street names when close, places always
         const taken = [];
         const free = (x, y, w, h) => {
@@ -476,6 +555,24 @@
         };
         g.textAlign = 'center';
         g.textBaseline = 'middle';
+        // Airports: their name beside a small plane
+        for (const { x, y, t } of tiles) {
+            const l = t.ready && t.layers.aerodrome_label;
+            if (!l) continue;
+            const P = tileProjector(x, y, z, l.extent, scale, W, H);
+            for (const f of l.features) {
+                const name = I18n.name(f.props) || f.props.icao;
+                if (!name || f.type !== 1) continue;
+                const [sx, sy] = P(f.lines[0][0]);
+                g.font = '700 13px system-ui,sans-serif';
+                const w = g.measureText(name).width;
+                if (!free(sx - 10, sy - 10, w + 26, 20)) continue;
+                planeGlyph(g, sx, sy, 8, '#c9d1db');
+                g.textAlign = 'left';
+                halo(g, name, sx + 12, sy, '#c9d1db');
+                g.textAlign = 'center';
+            }
+        }
         for (const { x, y, t } of tiles) {
             const l = t.ready && t.layers.place;
             if (!l) continue;
@@ -656,10 +753,27 @@
             g.arc(dx, dy, 9, 0, 7);
             g.fill();
         }
-        const f = osmSim.free;
+        const f = osmSim.free, an = f.on && f.kind === 'plane' && Air.nav();
+        // A plane's destination: a dashed straight line to it
+        if (an) {
+            const a = OsmMatch.unproject(f.x, f.y), b = OsmMatch.unproject(an.x, an.y), [ax, ay] = toScreen(a.lat, a.lon), [bx, by] = toScreen(b.lat, b.lon);
+            g.strokeStyle = '#3e8bff';
+            g.lineWidth = 4;
+            g.setLineDash([10, 8]);
+            g.beginPath();
+            g.moveTo(ax, ay);
+            g.lineTo(bx, by);
+            g.stroke();
+            g.setLineDash([]);
+            g.fillStyle = '#1f8a4c';
+            g.beginPath();
+            g.arc(bx, by, 9, 0, 7);
+            g.fill();
+        }
         if (f.on) {
             const ll = OsmMatch.unproject(f.x, f.y), [sx, sy] = toScreen(ll.lat, ll.lon);
-            arrow(g, sx, sy, f.brg * RAD, 1.2);
+            if (f.kind === 'plane') planeGlyph(g, sx, sy, 13, '#3e8bff', f.brg * RAD);
+            else arrow(g, sx, sy, f.brg * RAD, 1.2);
         }
         if (big.spawn) {
             const [sx, sy] = toScreen(big.spawn[0], big.spawn[1]);
@@ -700,6 +814,39 @@
         g.strokeText(text, x, y);
         g.fillStyle = color;
         g.fillText(text, x, y);
+    }
+
+    // A small plane seen from above, nose up (or along `angle`): airports on the maps, the plane on the minimap
+    function planeGlyph(g, x, y, r, color, angle = 0) {
+        g.save();
+        g.translate(x, y);
+        g.rotate(angle);
+        g.beginPath();
+        g.moveTo(0, -r);
+        g.lineTo(r * 0.16, -r * 0.55);
+        g.lineTo(r * 0.16, -r * 0.2);
+        g.lineTo(r, r * 0.05);
+        g.lineTo(r, r * 0.25);
+        g.lineTo(r * 0.16, r * 0.1);
+        g.lineTo(r * 0.12, r * 0.65);
+        g.lineTo(r * 0.45, r * 0.85);
+        g.lineTo(r * 0.45, r);
+        g.lineTo(0, r * 0.9);
+        g.lineTo(-r * 0.45, r);
+        g.lineTo(-r * 0.45, r * 0.85);
+        g.lineTo(-r * 0.12, r * 0.65);
+        g.lineTo(-r * 0.16, r * 0.1);
+        g.lineTo(-r, r * 0.25);
+        g.lineTo(-r, r * 0.05);
+        g.lineTo(-r * 0.16, -r * 0.2);
+        g.lineTo(-r * 0.16, -r * 0.55);
+        g.closePath();
+        g.lineWidth = 3;
+        g.strokeStyle = 'rgba(14,17,22,.9)';
+        g.stroke();
+        g.fillStyle = color;
+        g.fill();
+        g.restore();
     }
 
     function arrow(g, x, y, angle, s = 1) {
@@ -783,13 +930,16 @@
         g.setTransform(1, 0, 0, 1, 0, 0);
         g.fillStyle = '#1b2028';
         g.fillRect(0, 0, W, W);
-        const b = f.brg * RAD, cos = Math.cos(b), sin = Math.sin(b), s = dpr / mini.mpp;
+        // In the air it shows kilometres, more the higher the plane; the zoom buttons scale that
+        const mpp = f.kind === 'plane' ? Math.min(80, Math.max(2, (4 + (Air.agl || 0) / 10) * mini.mpp / 2)) : mini.mpp;
+        const b = f.brg * RAD, cos = Math.cos(b), sin = Math.sin(b), s = dpr / mpp;
         // Heading up: the direction of travel maps to the top of the circle
         const P = (px, py) => {
             const dx = (px - f.x) * s, dy = (py - f.y) * s;
             return [R + dx * cos - dy * sin, R - (dx * sin + dy * cos)];
         };
-        const edges = OsmMatch.edgesNear(f.x, f.y, R / s * 1.42), k = dpr * Math.min(1.8, Math.max(0.5, 2.2 / mini.mpp));
+        if (f.kind === 'plane') { drawMiniPlane(g, f, P, R, s, dpr); return; }
+        const edges = OsmMatch.edgesNear(f.x, f.y, R / s * 1.42), k = dpr * Math.min(1.8, Math.max(0.5, 2.2 / mpp));
         g.lineCap = g.lineJoin = 'round';
         for (const casing of [true, false]) {
             for (const cls of ROAD_ORDER) {
@@ -835,6 +985,11 @@
             g.stroke();
         }
         arrow(g, R, R, 0, dpr);
+        miniNorth(g, R, sin, cos, dpr);
+    }
+
+    // The north marker on the minimap's rim
+    function miniNorth(g, R, sin, cos, dpr) {
         const nr = R - 14 * dpr, nx = R - sin * nr, ny = R - cos * nr;
         g.fillStyle = 'rgba(14,18,24,.92)';
         g.beginPath();
@@ -845,6 +1000,104 @@
         g.textAlign = 'center';
         g.textBaseline = 'middle';
         g.fillText('N', nx, ny + dpr);
+    }
+
+    // The minimap in a plane: the big roads only, runways, towns and peaks by name, other players, and the line to
+    // where it is flying
+    function drawMiniPlane(g, f, P, R, s, dpr) {
+        const reach = R / s * 1.42, inCircle = (x, y, m = 6) => Math.hypot(x - R, y - R) < R - m * dpr;
+        g.lineCap = g.lineJoin = 'round';
+        const edges = OsmMatch.edgesNear(f.x, f.y, Math.min(reach, 3000));
+        for (const cls of ['secondary', 'primary', 'trunk', 'motorway']) {
+            const [color, w] = ROAD[cls];
+            g.strokeStyle = color;
+            g.globalAlpha = 0.55;
+            g.lineWidth = Math.max(1, w * 0.45) * dpr;
+            g.beginPath();
+            for (const e of edges) {
+                if (classOf(e.tags.highway) !== cls) continue;
+                const a = P(e.ax, e.ay), b = P(e.bx, e.by);
+                g.moveTo(a[0], a[1]);
+                g.lineTo(b[0], b[1]);
+            }
+            g.stroke();
+        }
+        g.globalAlpha = 1;
+        // Runways at their width, never thinner than a few pixels
+        g.lineCap = 'butt';
+        for (const r of Air.runwaysNear(f.x, f.y, reach)) {
+            const a = P(r.a.x, r.a.y), b = P(r.b.x, r.b.y);
+            g.strokeStyle = '#0e1116';
+            g.lineWidth = Math.max(4 * dpr, r.w * s) + 3 * dpr;
+            g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+            g.strokeStyle = '#e8edf3';
+            g.lineWidth = Math.max(4 * dpr, r.w * s);
+            g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+        }
+        g.lineCap = 'round';
+        // Towns and peaks, biggest first, kept apart
+        const taken = [], order = { city: 0, town: 1, peak: 2, village: 3, hamlet: 4 };
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        for (const p of Air.placesNear(f.x, f.y, reach).sort((a, b) => order[a.cls] - order[b.cls])) {
+            if (p.cls === 'hamlet' || (p.cls === 'village' && s < dpr / 12)) continue;
+            const [x, y] = P(p.x, p.y);
+            if (!inCircle(x, y, 18)) continue;
+            const size = (p.cls === 'city' ? 13 : p.cls === 'town' ? 12 : 10.5) * dpr;
+            g.font = `${p.cls === 'city' || p.cls === 'town' ? 700 : 600} ${size}px system-ui,sans-serif`;
+            const w = g.measureText(p.name).width + (p.cls === 'peak' ? 12 * dpr : 0);
+            const box = [x - w / 2, y - size, w, size * 2];
+            if (taken.some(r => box[0] < r[0] + r[2] && box[0] + box[2] > r[0] && box[1] < r[1] + r[3] && box[1] + box[3] > r[1])) continue;
+            taken.push(box);
+            if (p.cls === 'peak') {
+                g.fillStyle = '#c9a26b';
+                g.beginPath();
+                g.moveTo(x - w / 2, y + 4 * dpr); g.lineTo(x - w / 2 + 4.5 * dpr, y - 4 * dpr); g.lineTo(x - w / 2 + 9 * dpr, y + 4 * dpr);
+                g.fill();
+                g.font = `600 ${size}px system-ui,sans-serif`;
+                g.lineWidth = 3 * dpr;
+                g.strokeStyle = 'rgba(14,17,22,.9)';
+                g.strokeText(p.name, x + 6 * dpr, y);
+                g.fillStyle = '#e9d6b6';
+                g.fillText(p.name, x + 6 * dpr, y);
+            } else {
+                g.lineWidth = 3 * dpr;
+                g.strokeStyle = 'rgba(14,17,22,.9)';
+                g.strokeText(p.name, x, y);
+                g.fillStyle = '#fff';
+                g.fillText(p.name, x, y);
+            }
+        }
+        // Where it is flying: a dashed line, to the rim when farther
+        const an = Air.nav();
+        if (an) {
+            let [x, y] = P(an.x, an.y);
+            const d = Math.hypot(x - R, y - R), lim = R - 10 * dpr;
+            if (d > lim) { x = R + (x - R) * lim / d; y = R + (y - R) * lim / d; }
+            g.strokeStyle = '#3e8bff';
+            g.lineWidth = 3 * dpr;
+            g.setLineDash([6 * dpr, 5 * dpr]);
+            g.beginPath(); g.moveTo(R, R); g.lineTo(x, y); g.stroke();
+            g.setLineDash([]);
+            g.fillStyle = '#1f8a4c';
+            g.beginPath(); g.arc(x, y, 6 * dpr, 0, 7); g.fill();
+        }
+        // Other players: planes as planes, cars as dots
+        for (const p of Net.players()) {
+            if (!p.near) continue;
+            const [x, y] = P(p.x, p.y);
+            if (!inCircle(x, y)) continue;
+            g.fillStyle = p.colour;
+            g.strokeStyle = '#0e1116';
+            g.lineWidth = 2 * dpr;
+            g.beginPath();
+            g.arc(x, y, 4 * dpr, 0, 7);
+            g.fill();
+            g.stroke();
+        }
+        planeGlyph(g, R, R, 12 * dpr, '#3e8bff');
+        const b = f.brg * RAD;
+        miniNorth(g, R, Math.sin(b), Math.cos(b), dpr);
     }
 
     // ================= Road and town, gear, back to the road =================
@@ -907,13 +1160,35 @@
         fuelBtn.onclick = () => { fuelBtn.blur(); Fuel.empty ? rescue() : toStation(); };
         document.body.appendChild(fuelBtn);
         Fuel.onMessage = (key, ...args) => flash(tr(key, ...args));
+        Air.onMessage = (key, ...args) => flash(tr(key, ...args));
         Net.onMessage = (key, ...args) => flash(tr(key, ...args));
         Net.onMap = () => { big.dirty = true; };
         Fuel.onReserve = () => {
-            const f = osmSim.free, n = Fuel.near(f.x, f.y, 20000)[0];
+            const f = osmSim.free;
+            if (f.kind === 'plane') {
+                const rw = Air.runwayNear(f.x, f.y, 60000);
+                flash(rw ? tr('fuelReservePlane', fmtDist(Math.hypot(rw.x - f.x, rw.y - f.y))) : tr('fuelReserveNonePlane'));
+                return;
+            }
+            const n = Fuel.near(f.x, f.y, 20000)[0];
             flash(n ? tr('fuelReserve', fmtDist(n.d)) : tr('fuelReserveNone'));
         };
+        // The plane's throttle, left of the tank: on phones the throttle lever shows it
+        thrBox = el('div', 'position:fixed;right:62px;bottom:18px;z-index:400;display:none;flex-direction:column;align-items:center;gap:3px;'
+            + 'padding:7px 7px 6px;border-radius:10px;background:rgba(14,18,24,.6);box-shadow:0 4px 14px rgba(0,0,0,.35);'
+            + 'color:#fff;font:700 10px system-ui,sans-serif;letter-spacing:.5px;pointer-events:none');
+        thrSegs = [];
+        thrBox.append(el('div', 'opacity:.75', '100'));
+        for (let k = 0; k < 10; k++) {
+            const seg = el('div', 'width:16px;height:6px;border-radius:2px;background:rgba(255,255,255,.16)');
+            thrSegs.unshift(seg);
+            thrBox.appendChild(seg);
+        }
+        thrBox.append(el('div', 'opacity:.75', '0'), el('div', 'margin-top:2px;font-size:9px;opacity:.75', tr('throttle').toUpperCase()));
+        document.body.appendChild(thrBox);
     }
+
+    let thrBox, thrSegs;
 
     let fuelBox, fuelSegs, fuelBtn, rescuing = false, netStatus;
 
@@ -992,7 +1267,7 @@
         }
         if (f.on && !wasDriving) hornHintUntil = now + 10000;
         wasDriving = f.on;
-        const show = f.on && !big.open && now < hornHintUntil ? '1' : '0';
+        const show = f.on && f.kind !== 'plane' && !big.open && now < hornHintUntil ? '1' : '0';
         if (hornHint.style.opacity !== show) hornHint.style.opacity = show;
     }
 
@@ -1018,14 +1293,21 @@
             const st = Fuel.rescue();
             stopNav();
             town.at = 0;
-            flash(st ? tr('rescued', st.name || tr('station')) : tr('rescuedCan'));
+            flash(st ? tr('rescued', st.name || tr(osmSim.free.kind === 'plane' ? 'plane' : 'station')) : tr('rescuedCan'));
         }, 2000);
     }
 
     function drawHud(now) {
-        const f = osmSim.free, t = f.on && f.road;
-        roadBox.style.display = f.on && (t || town.name) ? 'block' : 'none';
-        if (f.on) {
+        const f = osmSim.free, t = f.on && f.road, flying = f.on && f.kind === 'plane';
+        roadBox.style.display = f.on && (t || town.name || flying) ? 'block' : 'none';
+        if (flying) {
+            // In the air: how high above the ground, and a warning when the wings stop carrying it
+            const st = Air.state();
+            const line = st.stall ? `<span style="color:#ff5a4f">${tr('stall')}</span>` : tr('altitude', Math.round(st.agl / 10) * 10);
+            const html = `<div style="font-size:15px;font-weight:600">${line}</div>`
+                + (town.name ? `<div style="font-size:12px;opacity:.8;margin-top:1px">${escapeHtml(town.name)}</div>` : '');
+            if (roadBox.innerHTML !== html) roadBox.innerHTML = html;
+        } else if (f.on) {
             let line = '';
             if (t) {
                 const ref = t.ref ? `<span style="background:${/^A\d/.test(t.ref) ? '#1f8a4c' : '#2a6fdb'};border-radius:4px;padding:1px 6px;font-size:12px;margin-right:6px;text-shadow:none">${escapeHtml(t.ref)}</span>` : '';
@@ -1054,12 +1336,26 @@
             const on = Fuel.filling ? '#3ccf7a' : lv < 0.05 ? '#ff5a4f' : lv < 0.15 ? '#ff9f1a' : '#f2f4f7';
             fuelSegs.forEach((seg, k) => { seg.style.background = k < lit && !(blink && k === lit - 1) ? on : 'rgba(255,255,255,.16)'; });
         }
-        // On reserve, unless already going to a station or filling up; dry and stopped, help
-        const dry = showFuel && Fuel.empty && Math.abs(f.v) < 0.5, low = showFuel && Fuel.level < 0.15 && !Fuel.filling && !nav.on;
+        // On reserve, unless already going to a station or filling up; dry and stopped, help. A plane on reserve
+        // is told where the nearest runway is, and gets help once down on the ground
+        const dry = showFuel && Fuel.empty && Math.abs(f.v) < 0.5 && !(flying && f.air), low = showFuel && Fuel.level < 0.15 && !Fuel.filling && !nav.on && !flying;
         fuelBtn.style.display = dry || low ? 'block' : 'none';
         const label = tr(dry ? 'callRescue' : 'toStation');
         if (fuelBtn.textContent !== label) fuelBtn.textContent = label;
         fuelBtn.style.background = dry ? '#ff5a4f' : '#ff9f1a';
+        thrBox.style.display = flying && !touch ? 'flex' : 'none';
+        // While flying the satellite imagery is on screen: its credit with the map's, as its licence asks
+        const credit = document.getElementById('mapAttribution');
+        if (credit) {
+            const text = MAP_CREDIT + (flying ? ' \u00b7 Sentinel-2 cloudless \u2013 https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)' : '');
+            if (credit.textContent !== text) credit.textContent = text;
+        }
+        // On phones the throttle lever is taller than the pedal: in a plane the gauge stands beside it
+        if (touch) Object.assign(fuelBox.style, flying ? { bottom: '24px', right: '98px' } : { bottom: '150px', right: '36px' });
+        if (flying && !touch) {
+            const lit = Math.round(Air.state().thr * 10);
+            thrSegs.forEach((seg, k) => { seg.style.background = k < lit ? '#3e8bff' : 'rgba(255,255,255,.16)'; });
+        }
     }
 
     // ================= Day, night or as it is now there; headlights on at night =================
@@ -1225,7 +1521,19 @@
     const roundDist = m => m >= 1000 ? Math.round(m / 100) * 100 : m >= 300 ? Math.round(m / 50) * 50 : Math.round(m / 10) * 10;
     const fmtDist = m => m >= 1000 ? I18n.num(m / 1000, 1) + ' km' : roundDist(m) + ' m';
 
+    // In a plane: which way and how far to the destination, in a straight line
+    function airGuide() {
+        const n = Air.nav();
+        navBox.style.display = n ? 'flex' : 'none';
+        if (!n) return;
+        const html = `<div style="width:30px;text-align:center;line-height:0"><svg width="26" height="26" viewBox="0 0 24 24" style="transform:rotate(${Math.round(n.turn)}deg)">`
+            + `<path d="M12 2l7 18-7-4-7 4z" fill="#3e8bff" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/></svg></div>`
+            + `<div><div style="font-size:17px;font-weight:700">${fmtDist(Math.round(n.d / 100) * 100)}</div><div style="font-size:12px;opacity:.85">${escapeHtml(n.name || tr('destination'))}</div></div>`;
+        if (navBox.firstChild.innerHTML !== html) navBox.firstChild.innerHTML = html;
+    }
+
     function guide(now) {
+        if (osmSim.free.on && osmSim.free.kind === 'plane') { airGuide(); return; }
         navBox.style.display = nav.on && osmSim.free.on ? 'flex' : 'none';
         if (!nav.on || !osmSim.free.on) return;
         const f = osmSim.free, P = nav.pts;
@@ -1282,7 +1590,7 @@
         navBox.append(el('div', 'display:flex;gap:10px;align-items:center'));
         const stopBtn = el('button', 'background:transparent;border:0;color:#fff;font-size:20px;cursor:pointer;opacity:.7;margin-left:6px', '✕');
         stopBtn.title = tr('endNav');
-        stopBtn.onclick = () => { stopBtn.blur(); stopNav(); };
+        stopBtn.onclick = () => { stopBtn.blur(); if (osmSim.free.kind === 'plane') Air.clearNav(); else stopNav(); };
         navBox.append(stopBtn);
         document.body.appendChild(navBox);
         toastBox = el('div', 'position:fixed;left:50%;top:58px;transform:translateX(-50%);z-index:1500;padding:6px 14px;font:600 14px system-ui,sans-serif;'
@@ -1292,7 +1600,46 @@
 
     // ================= Touch controls on phones and tablets =================
     const touch = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || new URLSearchParams(location.search).has('touch');
-    let touchPad = null;
+    let touchPad = null, planePad = null;
+    const planeTouch = { x: 0, y: 0, thr: 0 };
+    // Flying on a phone: a stick on the left (down climbs, sideways banks) springing back to the middle, and a
+    // throttle lever on the right that stays where it is left
+    function buildPlanePad() {
+        const pad = el('div', 'position:fixed;inset:0;z-index:450;pointer-events:none;display:none');
+        const R = 70;
+        const stick = el('div', CARD + ';position:absolute;left:24px;bottom:24px;width:' + 2 * R + 'px;height:' + 2 * R + 'px;border-radius:50%;'
+            + 'pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none');
+        const knob = el('div', 'position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;'
+            + 'background:rgba(62,139,255,.85);box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none');
+        stick.appendChild(knob);
+        const move = e => {
+            const r = stick.getBoundingClientRect();
+            let dx = (e.clientX - r.left - R) / R, dy = (e.clientY - r.top - R) / R;
+            const l = Math.hypot(dx, dy);
+            if (l > 1) { dx /= l; dy /= l; }
+            planeTouch.x = dx;
+            planeTouch.y = dy;
+            knob.style.transform = `translate(${dx * R * 0.7}px, ${dy * R * 0.7}px)`;
+        };
+        stick.addEventListener('pointerdown', e => { e.preventDefault(); stick.setPointerCapture(e.pointerId); move(e); });
+        stick.addEventListener('pointermove', e => { if (stick.hasPointerCapture(e.pointerId)) move(e); });
+        for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) stick.addEventListener(ev, () => { planeTouch.x = planeTouch.y = 0; knob.style.transform = ''; });
+        const lever = el('div', CARD + ';position:absolute;right:16px;bottom:24px;width:70px;height:170px;overflow:hidden;'
+            + 'pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none');
+        const fill = el('div', 'position:absolute;left:0;right:0;bottom:0;background:rgba(62,139,255,.75);pointer-events:none');
+        const label = el('div', 'position:absolute;left:0;right:0;top:8px;text-align:center;font:700 13px system-ui,sans-serif;pointer-events:none', tr('throttle').toUpperCase());
+        lever.append(fill, label);
+        const set = e => {
+            const r = lever.getBoundingClientRect();
+            planeTouch.thr = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / r.height));
+        };
+        lever.addEventListener('pointerdown', e => { e.preventDefault(); lever.setPointerCapture(e.pointerId); set(e); });
+        lever.addEventListener('pointermove', e => { if (lever.hasPointerCapture(e.pointerId)) set(e); });
+        pad.append(stick, lever);
+        pad.fill = fill;
+        document.body.appendChild(pad);
+        planePad = pad;
+    }
     function buildTouch() {
         const meta = document.querySelector('meta[name=viewport]');
         if (meta) meta.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
@@ -1342,6 +1689,7 @@
         pad.appendChild(hornBtn);
         document.body.appendChild(pad);
         touchPad = pad;
+        buildPlanePad();
         // The minimap and the gear move up, out of the thumbs' way
         Object.assign(mini.box.style, { width: '130px', height: '130px', left: '16px', top: '16px', bottom: '' });
         Object.assign(mini.canvas.style, { width: '130px', height: '130px' });
@@ -1367,7 +1715,15 @@
             carPlace(now);
             drawHornHint(now);
             guide(now);
-            if (touchPad) touchPad.style.display = osmSim.free.on && !big.open ? 'block' : 'none';
+            if (touchPad) {
+                const f = osmSim.free, fly = f.on && !big.open && f.kind === 'plane';
+                touchPad.style.display = f.on && !big.open && !fly ? 'block' : 'none';
+                // The lever starts where the plane's throttle is: idle on a runway, cruising in the air
+                if (fly && planePad.style.display === 'none') planeTouch.thr = Air.state().thr;
+                planePad.style.display = fly ? 'block' : 'none';
+                planePad.fill.style.height = planeTouch.thr * 100 + '%';
+                Air.setTouch(fly ? planeTouch : null);
+            }
         }
         updateRain(dt);
         if (now - sky.at > 60000) applySky(now);
@@ -1522,7 +1878,7 @@
         setRoadLinesConfig(true, 'left_dashed');
         setLocalizedStrings({ loading: tr('loading'), loadingProgress: tr('loadingProgress'), errorLoading: tr('error'), speedLabel: tr('speed'), speedUnit: 'km/h' });
         const credit = document.getElementById('mapAttribution');
-        if (credit) credit.textContent = '\u00a9 OpenStreetMap contributors \u00b7 \u00a9 OpenMapTiles \u00b7 OpenFreeMap';
+        if (credit) credit.textContent = MAP_CREDIT;
         await osmSim.ready;
         buildBig();
         buildMini();

@@ -250,14 +250,18 @@
     const LEAD = 60, REBUILD = 50;
     const built = { x: NaN, y: NaN, edges: 0, dem: 0, dark: null };
     function freeScene(nav, res) {
-        // Ahead in the gear's direction: a bounce off a wall doesn't swing the scene round
+        // Ahead in the gear's direction: a bounce off a wall doesn't swing the scene round. A plane covers ground
+        // faster: laid out farther ahead, rebuilt less often
+        const fly = free.kind === 'plane', agl = fly && window.Air ? Air.agl || 0 : 0;
+        // Low down the plane needs the detailed ground under it, like a car; higher up, what is ahead
+        const lead = fly ? Math.min(380, Math.max(LEAD, agl * 1.5)) : LEAD, rebuild = fly ? Math.min(150, Math.max(REBUILD, agl / 2)) : REBUILD;
         const b = (free.gear === 'R' ? free.brg + 180 : free.brg) * RAD;
-        const cx = free.x + Math.sin(b) * LEAD, cy = free.y + Math.cos(b) * LEAD;
-        const dem = (window.Terrain ? Terrain.version : 0) + (window.Fuel ? Fuel.version * 1e6 : 0);
-        if (Math.hypot(cx - built.x, cy - built.y) < REBUILD && OsmMatch.edges.length === built.edges && dem === built.dem && isDarkTheme === built.dark) return null;
+        const cx = free.x + Math.sin(b) * lead, cy = free.y + Math.cos(b) * lead;
+        const dem = (window.Terrain ? Terrain.version : 0) + (window.Fuel ? Fuel.version * 1e6 : 0) + (window.Air ? Air.version * 1e9 : 0);
+        if (Math.hypot(cx - built.x, cy - built.y) < rebuild && OsmMatch.edges.length === built.edges && dem === built.dem && isDarkTheme === built.dark) return null;
         Object.assign(built, { x: cx, y: cy, edges: OsmMatch.edges.length, dem, dark: isDarkTheme });
         const sc = (res.matched && OsmMatch.scene(nav)) || { car: { offset: 0 }, features: [] };
-        return { ...sc, path: [[cx, cy], [cx + Math.sin(b), cy + Math.cos(b)]], carIndex: 0, roads: nearbyRoads(cx, cy, 250) };
+        return { ...sc, path: [[cx, cy], [cx + Math.sin(b), cy + Math.cos(b)]], carIndex: 0, roads: nearbyRoads(cx, cy, fly ? Math.min(1050, 550 + agl) : 250) };
     }
 
     function frame() {
@@ -401,9 +405,10 @@
     }
     const free = { on: false, keys: new Set(), x: 0, y: 0, brg: 0, v: 0, steer: 0, z: 0, vz: 0, pitch: 0, roll: 0, air: false, t: 0, nextFix: 0, last: 0, nx: 0, ny: 0, tile: '', shownAt: 0 };
 
-    async function startFree(place) {
+    async function startFree(place, opts = {}) {
         run.on = false;
         free.on = false;
+        if (window.Air) Air.stop(free);
         recenter(place.lat, place.lon);
         // The route is unknown: about 4 km of roads and 7 km of terrain all around
         await prepare([place], 2, 2);
@@ -416,11 +421,19 @@
             const d = Math.hypot(p.x - e.ax - dx * t, p.y - e.ay - dy * t);
             if (!best || d < best.d) best = { d, x: e.ax + dx * t, y: e.ay + dy * t, brg: OsmMatch.bearing(e.ax, e.ay, e.bx, e.by) };
         }
-        if (!best) { info.textContent = 'Nessuna strada qui'; return false; }
-        Object.assign(free, { on: true, x: best.x, y: best.y, brg: best.brg, v: 0, steer: 0, vz: 0, pitch: 0, roll: 0, air: false, t: 0, nextFix: 0, last: performance.now(), nx: 0, ny: 0,
+        if (!best && opts.vehicle !== 'plane') { info.textContent = 'Nessuna strada qui'; return false; }
+        best = best || { x: p.x, y: p.y, brg: 0 };
+        Object.assign(free, { on: true, kind: 'car', x: best.x, y: best.y, brg: best.brg, v: 0, steer: 0, vz: 0, pitch: 0, roll: 0, air: false, t: 0, nextFix: 0, last: performance.now(), nx: 0, ny: 0,
             gear: 'D', gearN: 1, rpm: IDLE, shiftUntil: 0, thr: 0, brk: 0, dive: 0, waitGear: 0, road: null, roadAt: 0, offSince: 0, off: 0, odo: 0 });
         // Below everything: the first frame sets it on the ground
         free.z = -1e9;
+        // A plane: on the nearest runway, or in the air above the point
+        if (opts.vehicle === 'plane' && window.Air) {
+            free.on = false;
+            await Air.start(free, p.x, p.y, !!opts.inAir);
+            free.on = true;
+            free.last = performance.now();
+        }
         built.x = NaN;
         Object.assign(run, { maneuvers: null, navs: [], ok: 0, n: 0, trail: [] });
         OsmMatch.state.e = null;
@@ -439,6 +452,12 @@
         const k = c => free.keys.has(c);
         const up = k('ArrowUp') || k('KeyW'), down = k('ArrowDown') || k('KeyS');
         const left = k('ArrowLeft') || k('KeyA'), right = k('ArrowRight') || k('KeyD');
+        if (free.kind === 'plane' && window.Air) {
+            Air.step(free, dt, now);
+            free.t += dt * 1000;
+            freeTail(now, Math.abs(free.v));
+            return;
+        }
 
         // Engine fades out towards 200 km/h, brakes at 7 m/s², reverse up to 15 km/h once stopped; nothing in the air
         const sign = Math.sign(free.v), stopped = Math.abs(free.v) < 0.05;
@@ -536,13 +555,18 @@
             const bumpP = shake * (Math.sin(o * 2.3) + 0.6 * Math.sin(o * 5.1 + 1)), bumpR = shake * (Math.sin(o * 3.1 + 2) + 0.5 * Math.sin(o * 6.7));
             Terrain.car = { x: free.x, y: free.y, brg: free.brg, z: free.z, pitch: free.pitch + free.dive + bumpP, roll: free.roll + bumpR };
         }
+        freeTail(now, sp);
+    }
+
+    // What every frame ends with, driving or flying: the speed shown, whether off the road, the GPS fix
+    function freeTail(now, sp) {
         const kmh = Math.round(sp * 3.6);
         updateSpeed(kmh, kmh);
         if (now - free.roadAt > 250) {
             free.roadAt = now;
             free.road = roadUnder(free.x, free.y);
-            // A fuel station's forecourt is not off the road
-            if (free.road || (window.Fuel && Fuel.padAt(free.x, free.y, 1))) free.offSince = 0;
+            // A fuel station's forecourt is not off the road, nor is a plane
+            if (free.road || free.kind === 'plane' || (window.Fuel && Fuel.padAt(free.x, free.y, 1))) free.offSince = 0;
             else if (!free.offSince) free.offSince = now;
         }
 
@@ -551,7 +575,8 @@
             free.nx = 0.9 * free.nx + 1.5 * gauss();
             free.ny = 0.9 * free.ny + 1.5 * gauss();
             const ll = OsmMatch.unproject(free.x + free.nx, free.y + free.ny);
-            OsmMatch.ensure(ll.lat, ll.lon, 1);
+            // A plane sees farther: the roads two tiles round it
+            OsmMatch.ensure(ll.lat, ll.lon, free.kind === 'plane' ? 2 : 1);
             // The GPS bearing is the direction of travel, also in reverse
             const travel = free.v < 0 ? (free.brg + 180) % 360 : free.brg;
             onFix({
@@ -627,6 +652,7 @@
         if (window.World) World.reset();
         if (window.Pois) Pois.reset();
         if (window.Fuel) Fuel.reset();
+        if (window.Air) Air.reset();
         OsmMatch.project(lat, lon);
     }
 
@@ -639,6 +665,7 @@
 
     // Back on the nearest road, facing the way along it closest to the car's heading
     function backToRoad() {
+        if (free.kind === 'plane') return false;
         let best = null;
         for (const r of [50, 200, 1000]) {
             for (const e of OsmMatch.edgesNear(free.x, free.y, r)) {

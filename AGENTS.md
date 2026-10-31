@@ -7,7 +7,7 @@ Notes for anyone working on the code, people and AI agents alike.
 **OSM Drive** is a browser driving game on real roads, built on the fly from open data: OpenFreeMap vector tiles, Overpass, Terrain Tiles and Photon (sources and licences in the [README](README.md)).
 
 - **No build, no dependencies:** plain JavaScript and three.js r128 in `js/`. Serve it with `python3 serve.py` (alone) or `npx wrangler@4 dev` (with the online world).
-- **Published** on a Cloudflare Worker (`wrangler.toml`): the static site from the repository root (`.assetsignore` keeps the rest out) and the realtime world on `/ws`. GitHub Pages also serves the game, joining the Worker's world.
+- **Published** on a Cloudflare Worker (`wrangler.toml`): the static site from the repository root (`.assetsignore` keeps the rest out) and the realtime world on `/ws`.
 - **`index.html`** holds the 3D view and its global functions (`setMapScene`, `updateMap`, `setUpcomingTurn`, …). The scripts in `src/` extend or replace them from outside.
 
 ## Structure
@@ -22,14 +22,15 @@ Scripts load in this order (bottom of `index.html`); each exposes one global:
 | `src/osm-terrain.js` | `Terrain` | smoothed Terrarium z13 elevation, ground, asphalt on the ground (narrower on a side where buildings close in), embankments where the ground stays below a road, guardrails, sky and fog |
 | `src/osm-buildings.js` | `Buildings` | extruded buildings, footprints indexed by cell for collisions, road widths and roof heights, toll plazas |
 | `src/osm-world.js` | `World` | land cover, water, railways, street lights (never on another road or in a building), trees |
-| `src/osm-fuel.js` | `Fuel` | tank, consumption, fuel stations set beside their road at its level and slope (drawn here), filling up when stopped on a forecourt, roadside help |
+| `src/osm-fuel.js` | `Fuel` | a tank for the car and one for the plane, consumption, fuel stations set beside their road at its level and slope (drawn here), filling up when stopped on a forecourt (a plane: on an airport's paving), roadside help |
+| `src/osm-air.js` | `Air` | airports from the `aeroway` layer: runways joined across tiles, graded flat (the terrain levels the ground round them via `Terrain.flatAt`) with markings and lights; taxiways and aprons; cars and planes roll on them. Parked Cessnas, a plane flying over now and then, the plane the player flies (arcade physics, crash and restart), names of towns and peaks, straight-line destination. The land from up there: coarse Terrarium z10 ground under EOX Sentinel-2 cloudless imagery (z12 wide, z13 near), sunk where the detailed ground is |
 | `src/osm-poi.js` | `Pois` | labels over places of interest in the 3D view: the most important near and ahead, at most 10 (7 on phones), kept apart on screen; can be turned off |
-| `src/osm-sim.js` | `osmSim` | free driving: physics (slower, less grip and shaking off the asphalt), gearbox, collisions, back to the road. With `?debug`, road-matching tools |
-| `src/osm-net.js` | `Net` | online: connection, updates paced by proximity, other cars drawn a moment behind with interpolation, collisions between cars, ghost for 5 s after a start or help, horns heard by distance (volume, delay, muffling, side) |
+| `src/osm-sim.js` | `osmSim` | free driving: physics (slower, less grip and shaking off the asphalt), gearbox, collisions, back to the road; `free.kind` is `car` or `plane`, a plane's frames handed to `Air.step`. With `?debug`, road-matching tools |
+| `src/osm-net.js` | `Net` | online: connection, updates paced by proximity, other cars drawn a moment behind with interpolation, collisions between cars (not planes), planes drawn at their altitude up to 4 km away, ghost for 5 s after a start or help, horns heard by distance (volume, delay, muffling, side) |
 | `src/osm-engine.js` | `Engine` | synthesised engine, wind, tyre and rain sound, horn |
 | `src/osm-game.js` | — | interface: big map and minimap, search, navigation, sky and weather, settings, touch controls |
 
-- **`server/index.js`:** the Worker and its `World` Durable Object: one world, a grid of ~500 m cells; each update a player sends is answered with the 12 nearest in full and, every 5 s, the others roughly; horns are passed on to players within 500 m; the big map asks for what it shows (players by name from zoom 14, groups farther out). No timers, so it hibernates when nobody drives; nothing is stored.
+- **`server/index.js`:** the Worker and its `World` Durable Object: one world, a grid of ~500 m cells; each update a player sends is answered with the 12 nearest in full and, every 5 s, the others roughly; horns are passed on to players within 500 m; planes (with their altitude) are seen up to 4 km away; the big map asks for what it shows (players by name from zoom 14, groups farther out). No timers, so it hibernates when nobody drives; nothing is stored.
 - **`dev/`:** old style experiments, not loaded.
 - **`tools/traces.py`:** prepares GPS traces in `data/traces/` for `?debug`.
 - **`data/`:** local only, not in git.

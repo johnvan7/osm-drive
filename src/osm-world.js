@@ -280,12 +280,11 @@
         if (dark !== isDarkTheme) { dark = isDarkTheme; paint(); }
         for (const k of OsmOnline.areas.keys()) if (!indexed.has(k)) { index(k); return; }
         const ll = OsmMatch.unproject(f.x, f.y), [tx, ty] = OsmOnline.tileOf(ll.lat, ll.lon), want = new Set();
-        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) want.add(`${tx + dx}/${ty + dy}`);
+        const r = f.kind === 'plane' ? 2 : 1;
+        for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) want.add(`${tx + dx}/${ty + dy}`);
         for (const k of [...built.keys()]) if (!want.has(k)) drop(k);
         for (const k of want) {
-            if (built.has(k) || !OsmOnline.areas.has(k) || !Buildings.has(k)) continue;
-            const [lat, lon] = OsmOnline.tileCentre(...k.split('/').map(Number));
-            if (!Terrain.has(lat, lon)) continue;
+            if (built.has(k) || !OsmOnline.areas.has(k) || !Buildings.has(k) || !Terrain.tileReady(k)) continue;
             build(k);
             break;
         }

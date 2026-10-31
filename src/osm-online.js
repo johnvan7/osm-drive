@@ -220,9 +220,9 @@ const OsmOnline = (() => {
         }
         buildings.set(key, list);
 
-        // The rest of the world: water, land cover, railways, fuel stations, places of interest, in lat/lon
+        // The rest of the world: water, land cover, railways, fuel stations, places of interest, airports, in lat/lon
         const ll = (l, E2) => l.map(([x, y]) => toLL(x * E / E2, y * E / E2));
-        const area = { water: [], waterways: [], cover: [], rails: [], fuel: [], pois: [] };
+        const area = { water: [], waterways: [], cover: [], rails: [], fuel: [], pois: [], aero: { lines: [], polys: [], labels: [] } };
         const each = (name, fn) => { const l = layers[name]; if (l) for (const f of l.features) fn(f, l.extent); };
         each('water', (f, E2) => {
             if (f.type === 3 && f.props.brunnel !== 'tunnel') for (const poly of polygons(geometry(f.geom))) area.water.push({ rings: poly.map(r => ll(r, E2)), cls: f.props.class });
@@ -256,6 +256,36 @@ const OsmOnline = (() => {
                 if (f.props.class === 'fuel' && !fuelSeen.has(fk)) { fuelSeen.add(fk); area.fuel.push({ lat, lon, name: f.props.name || '' }); }
                 // Only the kinds the labels can show: a city tile has thousands of gates and bollards
                 if (!window.Pois || Pois.wants(f.props)) area.pois.push({ lat, lon, p: f.props });
+            }
+        });
+        // Airports: runways and taxiways as lines or areas, aprons as areas, and the airport's name
+        each('aeroway', (f, E2) => {
+            const cls = f.props.class;
+            if (!['runway', 'taxiway', 'apron', 'helipad'].includes(cls)) return;
+            if (f.type === 2) for (const raw of geometry(f.geom)) for (const line of clipLine(raw, E2)) area.aero.lines.push({ line: ll(line, E2), cls });
+            if (f.type === 3) for (const poly of polygons(geometry(f.geom))) area.aero.polys.push({ rings: poly.map(r => ll(r, E2)), cls });
+        });
+        each('aerodrome_label', (f, E2) => {
+            if (f.type === 1) for (const p of geometry(f.geom)) {
+                const [lat, lon] = ll(p, E2)[0];
+                area.aero.labels.push({ lat, lon, name: f.props.name || f.props.icao || f.props.iata || '', cls: f.props.class });
+            }
+        });
+        // Towns and villages, and mountain peaks with their height: labels and the plane's minimap
+        area.places = [];
+        each('place', (f, E2) => {
+            const cls = f.props.class;
+            if (f.type !== 1 || !['city', 'town', 'village', 'hamlet'].includes(cls)) return;
+            for (const p of geometry(f.geom)) {
+                const [lat, lon] = ll(p, E2)[0];
+                area.places.push({ lat, lon, name: (window.I18n ? I18n.name(f.props) : f.props.name) || '', cls, rank: f.props.rank || 10 });
+            }
+        });
+        each('mountain_peak', (f, E2) => {
+            if (f.type !== 1 || !f.props.name) return;
+            for (const p of geometry(f.geom)) {
+                const [lat, lon] = ll(p, E2)[0];
+                area.places.push({ lat, lon, name: (window.I18n ? I18n.name(f.props) : f.props.name), cls: 'peak', ele: f.props.ele, rank: f.props.rank || 10 });
             }
         });
         areas.set(key, area);
