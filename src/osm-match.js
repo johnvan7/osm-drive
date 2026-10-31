@@ -446,7 +446,12 @@ const OsmMatch = (() => {
         const path = [...back.slice().reverse().map(p => [p.x, p.y]), ...ah.pts.map(p => [p.x, p.y])];
         const carIndex = back.length;
         const car = { x: state.x, y: state.y };
-        const near = (e, x, y, r) => Math.min(Math.hypot(e.ax - x, e.ay - y), Math.hypot(e.bx - x, e.by - y)) < r;
+        // By the segment's distance, not its ends: long straights have far-apart nodes
+        const near = (e, x, y, r) => {
+            const dx = e.bx - e.ax, dy = e.by - e.ay, l2 = dx * dx + dy * dy || 1e-9;
+            const t = Math.max(0, Math.min(1, ((x - e.ax) * dx + (y - e.ay) * dy) / l2));
+            return Math.hypot(e.ax + dx * t - x, e.ay + dy * t - y) < r;
+        };
 
         const pathWays = new Set([...ah.segs.map(sg => sg.e.way), ...back.map(p => p.e.way)]);
         const roads = [];

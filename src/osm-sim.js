@@ -388,7 +388,13 @@
 
     function nearbyRoads(x, y, r) {
         const ways = new Set(OsmMatch.edgesNear(x, y, r).map(e => e.way));
-        const near = e => Math.min(Math.hypot(e.ax - x, e.ay - y), Math.hypot(e.bx - x, e.by - y)) < r + 50;
+        // By the segment's distance, not its ends: a motorway's straight can run hundreds of metres between two nodes,
+        // and leaving it out leaves a hole in the road (and the guardrails of a bridge over it across it)
+        const near = e => {
+            const dx = e.bx - e.ax, dy = e.by - e.ay, l2 = dx * dx + dy * dy || 1e-9;
+            const t = Math.max(0, Math.min(1, ((x - e.ax) * dx + (y - e.ay) * dy) / l2));
+            return Math.hypot(e.ax + dx * t - x, e.ay + dy * t - y) < r + 50;
+        };
         const out = [];
         for (const way of ways) out.push(...OsmMatch.wayRoads(way, near));
         return out;
